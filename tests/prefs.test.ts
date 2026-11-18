@@ -63,3 +63,41 @@ describe('song config and results', () => {
     expect(getBest('none')).toBeNull();
   });
 });
+
+import { toggleFavorite, getFavorites, recordPractice, getStreak, pushHistory, getHistory } from '../src/lib/storage/prefs';
+
+describe('favorites, streak and history', () => {
+  test('toggleFavorite adds and removes', () => {
+    expect(toggleFavorite('a')).toBe(true);
+    expect(getFavorites()).toEqual(['a']);
+    expect(toggleFavorite('a')).toBe(false);
+    expect(getFavorites()).toEqual([]);
+  });
+
+  test('corrupt favorites fall back to empty', () => {
+    localStorage.setItem('keyfall.favorites', '{oops');
+    expect(getFavorites()).toEqual([]);
+  });
+
+  test('practice streak grows on consecutive days and resets after a missed day', () => {
+    expect(recordPractice(new Date(2026, 10, 1, 9))).toBe(1);
+    expect(recordPractice(new Date(2026, 10, 1, 21))).toBe(1);
+    expect(recordPractice(new Date(2026, 10, 2, 8))).toBe(2);
+    expect(getStreak(new Date(2026, 10, 3, 12))).toBe(2); // yesterday counts until today ends
+    expect(getStreak(new Date(2026, 10, 4, 12))).toBe(0); // a missed day breaks it
+    expect(recordPractice(new Date(2026, 10, 4, 12))).toBe(1);
+  });
+
+  test('history keeps the most recent first, unique, at most 10', () => {
+    for (let i = 0; i < 12; i++) pushHistory('s' + i);
+    pushHistory('s5');
+    const h = getHistory();
+    expect(h[0]).toBe('s5');
+    expect(h).toHaveLength(10);
+    expect(new Set(h).size).toBe(10);
+  });
+
+  test('haptics are on by default', () => {
+    expect(getSettings().haptics).toBe(true);
+  });
+});

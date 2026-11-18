@@ -1,5 +1,5 @@
 import { NoteDetector } from '../listen/detector';
-import { piano, setAudioSession } from './piano';
+import { piano } from './piano';
 
 export class MicError extends Error {
   constructor(
@@ -15,21 +15,29 @@ export interface Listener {
   level(): number;
 }
 
+/** Typical delay from a key being struck to the detector reporting it (analysis window + polling). */
+export const MIC_LAG = 0.09;
+
 const FFT_SIZE = 8192;
 
 /** Listen to a real piano through the microphone and report note onsets. */
-export async function startListening(onNotes: (midis: number[]) => void, sensitivity: number): Promise<Listener> {
+export async function startListening(
+  onNotes: (midis: number[]) => void,
+  sensitivity: number,
+  expected?: () => Set<number>,
+  onLost?: () => void,
+): Promise<Listener> {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new MicError('unavailable', 'This browser can’t use the microphone. Open Keyfall from Safari or the home screen.');
   }
-  setAudioSession('play-and-record');
+  piano.setListening(true);
   let stream: MediaStream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
     });
   } catch (e) {
-    setAudioSession('playback');
+    piano.setListening(false);
     const name = (e as DOMException)?.name;
     if (name === 'NotAllowedError' || name === 'SecurityError') {
       throw new MicError('denied', 'Microphone access is off. Allow it in Settings › Safari › Microphone, then try again.');
@@ -49,9 +57,14 @@ export async function startListening(onNotes: (midis: number[]) => void, sensiti
   const buf = new Float32Array(analyser.frequencyBinCount);
   const timer = window.setInterval(() => {
     analyser.getFloatFrequencyData(buf);
-    const notes = detector.process(buf, performance.now());
+    const notes = detector.process(buf, performance.now(), expected?.());
     if (notes.length) onNotes(notes);
   }, 16);
+
+  for (const t of stream.getAudioTracks()) {
+    t.onended = () => onLost?.();
+    t.onmute = () => onLost?.();
+  }
 
   return {
     level: () => detector.level(),
@@ -60,8 +73,11 @@ export async function startListening(onNotes: (midis: number[]) => void, sensiti
       source.disconnect();
       analyser.disconnect();
       sink.disconnect();
-      stream.getTracks().forEach((t) => t.stop());
-      setAudioSession('playback');
+      stream.getTracks().forEach((t) => {
+        t.onended = t.onmute = null;
+        t.stop();
+      });
+      piano.setListening(false);
     },
   };
 }

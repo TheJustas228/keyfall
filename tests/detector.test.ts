@@ -120,3 +120,56 @@ describe('NoteDetector', () => {
     expect(quiet).toBeGreaterThanOrEqual(0);
   });
 });
+
+/** A held piano key: decays while held, then the damper stops it quickly at release. */
+const keyPress = (midi: number, t0: number, held: number) => (t: number) => {
+  if (t < t0) return 0;
+  const f = freq(midi);
+  const dt = t - t0;
+  const env = Math.exp(-dt / 1.5) * (dt > held ? Math.exp(-(dt - held) / 0.04) : 1);
+  if (env < 1e-4) return 0;
+  let s = 0;
+  HARM.forEach((a, h) => (s += a * Math.sin(2 * Math.PI * f * (h + 1) * dt)));
+  return 0.1 * env * s;
+};
+
+/** Learn-mode simulation: the detector is told which note comes next, like the player does. */
+function learnSequence(seq: number[], beat: number) {
+  const signal = mix(...seq.map((m, i) => keyPress(m, 0.4 + i * beat, beat * 0.85)));
+  const det = new NoteDetector(SR, N);
+  const heard: number[] = [];
+  let next = 0;
+  const seconds = 0.4 + seq.length * beat + 0.3;
+  for (let k = 1; k * HOP <= seconds * SR; k++) {
+    const t = (k * HOP) / SR;
+    if (t * SR < N) continue;
+    const expected = next < seq.length ? new Set([seq[next]]) : new Set<number>();
+    for (const m of det.process(spectrumAt(signal, t), t * 1000, expected)) {
+      if (m === seq[next]) { heard.push(m); next++; }
+    }
+  }
+  return heard;
+}
+
+describe('NoteDetector with expected notes (template matching)', () => {
+  test('Ode to Joy at 100 bpm is heard note for note, including repeated notes', () => {
+    const seq = [64, 64, 65, 67, 67, 65, 64, 62];
+    expect(learnSequence(seq, 0.6)).toEqual(seq);
+  });
+
+  test('a low semitone step E4 → F4 is heard', () => {
+    expect(learnSequence([64, 65, 64, 65], 0.6)).toEqual([64, 65, 64, 65]);
+  });
+
+  test('Für Elise opening (fast semitone trill) is heard', () => {
+    const seq = [76, 75, 76, 75, 76, 71, 74, 72, 69];
+    expect(learnSequence(seq, 0.3)).toEqual(seq);
+  });
+
+  test('an expected note is not reported while silent', () => {
+    const det = new NoteDetector(SR, N);
+    let got: number[] = [];
+    for (let k = 12; k < 60; k++) got = got.concat(det.process(spectrumAt(() => 0, (k * HOP) / SR), (k * HOP) / SR * 1000, new Set([60])));
+    expect(got).toEqual([]);
+  });
+});

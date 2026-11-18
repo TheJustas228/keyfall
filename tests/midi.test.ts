@@ -97,3 +97,47 @@ describe('midiToSong hand assignment', () => {
     expect(() => parseMidi(new Uint8Array([1, 2, 3, 4]))).toThrow(/MIDI/);
   });
 });
+
+describe('midiToSong with mixed-part layouts (downloaded pop MIDIs)', () => {
+  // a piano part that holds both hands: LH G2..G3 and RH G4..G5, 24 notes
+  const pianoEvents = (ch: number): Ev[] => {
+    const ev: Ev[] = [];
+    const lh = [43, 47, 50, 55];
+    const rh = [67, 71, 74, 79];
+    for (let i = 0; i < 12; i++) {
+      const t = i * 240;
+      ev.push([t, on(ch, lh[i % 4])], [t + 200, off(ch, lh[i % 4])], [t, on(ch, rh[i % 4])], [t + 200, off(ch, rh[i % 4])]);
+    }
+    return ev;
+  };
+  const handsOf = (song: ReturnType<typeof midiToSong>, hand: 'R' | 'L') => new Set(song.notes.filter((x) => x.hand === hand).map((x) => x.midi));
+
+  test('piano with both hands plus a few bell notes: the piano is split between the hands', () => {
+    const bells: Ev[] = [[0, on(1, 96)], [100, off(1, 96)], [480, on(1, 98)], [580, off(1, 98)], [960, on(1, 100)], [1060, off(1, 100)]];
+    const song = midiToSong(smf(0, 480, [track([...pianoEvents(0), ...bells])]), { id: 'p', title: 'P' });
+    const R = handsOf(song, 'R'), L = handsOf(song, 'L');
+    for (const m of [67, 71, 74, 79]) expect(R.has(m)).toBe(true);
+    for (const m of [43, 47, 50, 55]) expect(L.has(m)).toBe(true);
+  });
+
+  test('melody track plus a two-handed piano track: the piano left hand stays in the left hand', () => {
+    const melody = track([[0, on(0, 76)], [400, off(0, 76)], [480, on(0, 77)], [880, off(0, 77)], [960, on(0, 79)], [1360, off(0, 79)]]);
+    const song = midiToSong(smf(1, 480, [melody, track(pianoEvents(1))]), { id: 'm', title: 'M' });
+    const L = handsOf(song, 'L');
+    for (const m of [43, 47, 50, 55]) expect(L.has(m)).toBe(true);
+    for (const m of [67, 71, 74, 79, 76]) expect(L.has(m)).toBe(false);
+  });
+
+  test('two-handed piano plus a bass track: the piano right hand stays in the right hand', () => {
+    const bass = track([[0, on(2, 31)], [400, off(2, 31)], [480, on(2, 33)], [880, off(2, 33)], [960, on(2, 35)], [1360, off(2, 35)]]);
+    const song = midiToSong(smf(1, 480, [track(pianoEvents(0)), bass]), { id: 'b', title: 'B' });
+    const R = handsOf(song, 'R');
+    for (const m of [67, 71, 74, 79]) expect(R.has(m)).toBe(true);
+    for (const m of [43, 47, 50, 55, 31]) expect(R.has(m)).toBe(false);
+  });
+
+  test('a MIDI file with time division 0 is rejected instead of producing NaN times', () => {
+    const bytes = smf(0, 0, [track([[0, on(0, 60)], [10, off(0, 60)]])]);
+    expect(() => parseMidi(bytes)).toThrow(/MIDI/);
+  });
+});

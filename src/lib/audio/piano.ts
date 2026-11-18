@@ -39,6 +39,8 @@ class Piano {
   private loading: Promise<void> | null = null;
   private volume = 0.85;
   private reverbOn = true;
+  private listening = false;
+  private stateListeners = new Set<(running: boolean) => void>();
   loaded = false;
 
   private context(): AudioContext {
@@ -60,6 +62,9 @@ class Piano {
     this.bus.connect(comp);
     this.bus.connect(reverb).connect(this.wet).connect(comp);
     comp.connect(this.master).connect(ctx.destination);
+    ctx.onstatechange = () => {
+      for (const fn of this.stateListeners) fn(ctx.state === 'running');
+    };
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible' && this.ctx?.state !== 'running') this.ctx?.resume().catch(() => {});
     });
@@ -69,7 +74,8 @@ class Piano {
 
   /** Call from a user gesture (tap). Unlocks audio on iOS, even with the silent switch on. */
   async ensureStarted(): Promise<void> {
-    setAudioSession('playback');
+    // While the microphone is in use iOS needs the play-and-record category, or capture may be muted.
+    setAudioSession(this.listening ? 'play-and-record' : 'playback');
     const ctx = this.context();
     if (ctx.state !== 'running') {
       try {
@@ -106,6 +112,21 @@ class Piano {
       this.loaded = this.buffers.some(Boolean);
     });
     return this.loading;
+  }
+
+  setListening(on: boolean) {
+    this.listening = on;
+    setAudioSession(on ? 'play-and-record' : 'playback');
+  }
+
+  /** Be told when audio stops or starts running (calls, Siri, alarms interrupt it). */
+  onRunningChange(fn: (running: boolean) => void): () => void {
+    this.stateListeners.add(fn);
+    return () => this.stateListeners.delete(fn);
+  }
+
+  get running(): boolean {
+    return this.ctx?.state === 'running';
   }
 
   now(): number {

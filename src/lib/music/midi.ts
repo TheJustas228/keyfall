@@ -132,6 +132,7 @@ export function parseMidi(bytes: Uint8Array): MidiData {
   const division = r.u16();
   r.pos = 8 + hlen;
   if (division & 0x8000) throw new Error('SMPTE-timed MIDI files are not supported');
+  if (division === 0) throw new Error('Invalid MIDI time division (0)');
 
   const tempos: { tick: number; us: number }[] = [];
   const raw: RawTrack[] = [];
@@ -194,14 +195,25 @@ export function midiToSong(bytes: Uint8Array, meta: Partial<Song> & { id: string
     parts.push(...byCh.values());
   }
   const notes: Note[] = [];
+  const push = (n: MidiNote, hand: 'R' | 'L') => notes.push({ midi: n.midi, start: n.start, dur: n.dur, vel: n.vel, hand });
+  const SPLIT = 60;
   if (parts.length === 1) {
-    for (const n of parts[0]) notes.push({ midi: n.midi, start: n.start, dur: n.dur, vel: n.vel, hand: n.midi >= 60 ? 'R' : 'L' });
+    for (const n of parts[0]) push(n, n.midi >= SPLIT ? 'R' : 'L');
   } else {
-    const means = parts.map((p) => p.reduce((s, n) => s + n.midi, 0) / p.length);
-    const mid = (Math.max(...means) + Math.min(...means)) / 2;
+    // A "wide" part holds both hands (a full piano part): split it note by note at middle C.
+    // Narrow parts (a melody, a bass line, one hand) go to one hand by their average pitch.
+    const total = parts.reduce((s, p) => s + p.length, 0);
+    const info = parts.map((p) => {
+      const sorted = p.map((n) => n.midi).sort((x, y) => x - y);
+      const pct = (q: number) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
+      const p10 = pct(0.1), p90 = pct(0.9);
+      return { wide: p90 - p10 >= 20 && p10 < SPLIT - 2 && p90 > SPLIT + 2, mean: sorted.reduce((s, x) => s + x, 0) / sorted.length, big: p.length >= total * 0.05 };
+    });
+    const narrowMeans = info.filter((i) => !i.wide && i.big).map((i) => i.mean);
+    const threshold = narrowMeans.length >= 2 ? (Math.max(...narrowMeans) + Math.min(...narrowMeans)) / 2 : SPLIT;
     parts.forEach((p, i) => {
-      const hand = means[i] > mid ? 'R' : 'L';
-      for (const n of p) notes.push({ midi: n.midi, start: n.start, dur: n.dur, vel: n.vel, hand });
+      if (info[i].wide) for (const n of p) push(n, n.midi >= SPLIT ? 'R' : 'L');
+      else for (const n of p) push(n, info[i].mean > threshold ? 'R' : 'L');
     });
   }
   sortNotes(notes);

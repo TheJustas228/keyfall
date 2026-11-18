@@ -14,6 +14,8 @@ const TAU_MS = 400;
 const REFRACTORY_MS = 120;
 const CONFIRM_MIN_MS = 28; // wait for a sharper spectrum before trusting a rise
 const CONFIRM_MAX_MS = 160;
+const EXPECTED_RISE = 1.5;
+const EXPECTED_NEIGHBOUR = 0.6;
 const HISTORY_MS = 90;
 const REL_FLOOR = 0.08; // fraction of the loudest note this frame
 const HARMONIC_OF = [12, 19, 24, 28, 31, 34, 36]; // n is the 2nd..8th harmonic of n - k
@@ -54,7 +56,12 @@ export class NoteDetector {
     return this.lvl;
   }
 
-  process(magDb: Float32Array, timeMs: number): number[] {
+  /**
+   * `expected` are the notes the player is waiting for. They are confirmed with
+   * relaxed rules (template matching), which catches repeated notes and close
+   * semitone steps that open-ended detection misses.
+   */
+  process(magDb: Float32Array, timeMs: number, expected?: Set<number>): number[] {
     const dt = this.lastT < 0 ? 16 : Math.max(1, timeMs - this.lastT);
     this.lastT = timeMs;
     const lin = (k: number) => 10 ** (magDb[k] / 20);
@@ -96,14 +103,16 @@ export class NoteDetector {
       const v = e[m];
       let recentMin = v;
       for (const h of this.history) recentMin = Math.min(recentMin, h.e[m]);
-      const loudEnough = v >= this.floorLin && v >= REL_FLOOR * frameMax;
-      const rising = v > RISE * recentMin && v > BASELINE_RATIO * this.baseline[m];
+      const exp = expected?.has(m) ?? false;
+      const loudEnough = v >= this.floorLin && (exp || v >= REL_FLOOR * frameMax);
+      const rising = exp ? v > EXPECTED_RISE * recentMin : v > RISE * recentMin && v > BASELINE_RATIO * this.baseline[m];
       const free = timeMs - this.lastOnset[m] >= REFRACTORY_MS;
       if (rising && loudEnough && free && timeMs - this.candidateSince[m] > CONFIRM_MAX_MS) this.candidateSince[m] = timeMs;
       const age = timeMs - this.candidateSince[m];
       if (age < CONFIRM_MIN_MS || age > CONFIRM_MAX_MS || !free) continue;
-      const localMax = v >= e[m - 1] && (m === HI || v >= e[m + 1]);
-      if (loudEnough && localMax && this.grounded[m] && !this.isHarmonic(m)) {
+      const neighbour = Math.max(e[m - 1], m === HI ? 0 : e[m + 1]);
+      const localMax = exp ? v >= EXPECTED_NEIGHBOUR * neighbour : v >= neighbour;
+      if (loudEnough && localMax && this.grounded[m] && (exp || !this.isHarmonic(m))) {
         onsets.push(m);
         this.lastOnset[m] = timeMs;
         this.candidateSince[m] = -1e9;

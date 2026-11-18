@@ -19,6 +19,8 @@ export class Stats {
   combo = 0;
   bestCombo = 0;
   score = 0;
+  /** song times of wrong presses (for the results timeline) */
+  wrongTimes: number[] = [];
   constructor(readonly mode: Mode) {}
 
   accuracy(): number {
@@ -51,6 +53,10 @@ export class Session {
   stats: Stats;
   loop: { a: number; b: number } | null = null;
   loopCount = 0;
+  /** increments on every seek (including loop wraps) so the player can reschedule audio */
+  epoch = 0;
+  /** play mode: notes before this time are never counted as missed (after a forward seek) */
+  private scoreFrom = -Infinity;
   readonly lastEnd: number;
   readonly firstStart: number;
 
@@ -97,6 +103,7 @@ export class Session {
     if (this.mode === 'play') {
       for (const note of this.prepared.required) {
         if (note.start > this.clock) break;
+        if (note.start < this.scoreFrom) continue;
         if (!this.judgments.has(note) && (this.clock - note.start) / this.speed > GOOD_WINDOW) {
           this.judgments.set(note, 'miss');
           this.stats.miss++;
@@ -113,10 +120,11 @@ export class Session {
     if (this.clock > this.lastEnd + END_PAD) this.finished = true;
   }
 
-  press(midi: number): Judgment | null {
+  /** `atClock` lets microphone input be judged at the moment the note was really played. */
+  press(midi: number, atClock?: number): Judgment | null {
     if (this.mode === 'watch' || this.finished) return null;
     if (this.mode === 'learn') return this.pressLearn(midi);
-    return this.pressPlay(midi);
+    return this.pressPlay(midi, atClock ?? this.clock);
   }
 
   private pressLearn(midi: number): Judgment | null {
@@ -124,6 +132,7 @@ export class Session {
     const inWindow = step && this.clock >= step.time - EARLY_WINDOW * this.speed;
     if (!step || !inWindow || !step.notes.some((n) => n.midi === midi)) {
       this.stats.wrong++;
+      this.stats.wrongTimes.push(this.clock);
       return 'wrong';
     }
     if (this.stepHits.has(midi)) return null;
@@ -138,12 +147,12 @@ export class Session {
     return 'perfect';
   }
 
-  private pressPlay(midi: number): Judgment {
+  private pressPlay(midi: number, at: number): Judgment {
     let best: Note | null = null;
     let bestErr = Infinity;
     for (const note of this.prepared.required) {
       if (note.midi !== midi || this.judgments.has(note)) continue;
-      const err = Math.abs(note.start - this.clock) / this.speed;
+      const err = Math.abs(note.start - at) / this.speed;
       if (err <= GOOD_WINDOW && err < bestErr) {
         best = note;
         bestErr = err;
@@ -177,6 +186,8 @@ export class Session {
 
   seek(t: number): void {
     this.clock = t;
+    this.epoch++;
+    this.scoreFrom = t;
     this.finished = false;
     this.waiting = false;
     this.stepHits.clear();
@@ -194,6 +205,25 @@ export class Session {
 
   setLoop(a: number | null, b: number | null): void {
     this.loop = a !== null && b !== null && b > a ? { a, b } : null;
+  }
+
+  /** Accuracy per time bucket across the song (null where nothing was judged). */
+  timeline(buckets: number): (number | null)[] {
+    const out: (number | null)[] = [];
+    const len = this.lastEnd > 0 ? this.lastEnd / buckets : 1;
+    const score = new Array(buckets).fill(0);
+    const count = new Array(buckets).fill(0);
+    const bucketOf = (t: number) => Math.min(buckets - 1, Math.max(0, Math.floor(t / len)));
+    for (const [note, j] of this.judgments) {
+      const b = bucketOf(note.start);
+      count[b]++;
+      score[b] += j === 'perfect' ? 1 : j === 'good' ? 0.6 : 0;
+    }
+    if (this.mode === 'learn') {
+      for (const t of this.stats.wrongTimes) count[bucketOf(t)]++;
+    }
+    for (let b = 0; b < buckets; b++) out.push(count[b] ? score[b] / count[b] : null);
+    return out;
   }
 
   progress(): number {

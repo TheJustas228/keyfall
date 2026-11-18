@@ -188,3 +188,64 @@ describe('Session robustness', () => {
     expect(s.finished).toBe(true);
   });
 });
+
+describe('Session timeline', () => {
+  test('play mode: per-bucket accuracy from note judgments, empty buckets are null', () => {
+    const s = new Session(prep([n(60, 0.5), n(62, 3.5)]), 'play', 1, { leadIn: 0 });
+    run(s, 0.5); s.press(60);   // perfect at 0.5
+    run(s, 4);                  // 62 missed
+    const t = s.timeline(4);    // lastEnd 3.9 → buckets of ~0.975 s
+    expect(t[0]).toBe(1);
+    expect(t[1]).toBeNull();
+    expect(t[3]).toBe(0);
+  });
+
+  test('learn mode: wrong presses lower the bucket where they happened', () => {
+    const s = new Session(prep([n(60, 0.5), n(62, 3.5)]), 'learn', 1, { leadIn: 0 });
+    run(s, 1); s.press(61); s.press(60); // one wrong, one right near 0.5
+    run(s, 4); s.press(62);
+    const t = s.timeline(2);
+    expect(t[0]).toBeCloseTo(0.5);
+    expect(t[1]).toBe(1);
+  });
+
+  test('a session with no required notes gives all-null buckets, never NaN', () => {
+    const p = prepare(song([n(60, 1)]), { R: 'off', L: 'off' });
+    const s = new Session(p, 'watch', 1, { leadIn: 0 });
+    expect(s.timeline(5)).toEqual([null, null, null, null, null]);
+  });
+});
+
+describe('Session review fixes', () => {
+  test('every seek, including a loop wrap, bumps the epoch so the player can reschedule', () => {
+    const s = new Session(prep([n(60, 1), n(62, 5)]), 'watch', 1, { leadIn: 0 });
+    const e0 = s.epoch;
+    s.seek(0.5);
+    expect(s.epoch).toBe(e0 + 1);
+    s.setLoop(2, 3);
+    run(s, 3);
+    expect(s.epoch).toBe(e0 + 2);
+  });
+
+  test('play mode: seeking forward does not count the skipped notes as misses', () => {
+    const notes = Array.from({ length: 40 }, (_, i) => n(60 + (i % 5), i * 0.5));
+    const s = new Session(prep(notes), 'play', 1, { leadIn: 0 });
+    s.seek(10);
+    s.update(1 / 60);
+    expect(s.stats.miss).toBe(0);
+  });
+
+  test('play mode: a looped section is scored again on each pass without stale misses', () => {
+    const s = new Session(prep([n(60, 1), n(62, 6)]), 'play', 1, { leadIn: 0 });
+    s.setLoop(4, 7);
+    s.seek(4);
+    run(s, 1);
+    expect(s.stats.miss).toBe(0);
+  });
+
+  test('press can be judged at an earlier clock (microphone latency compensation)', () => {
+    const s = new Session(prep([n(60, 1)]), 'play', 1, { leadIn: 0 });
+    run(s, 1.12); // 120 ms late → would be good
+    expect(s.press(60, s.clock - 0.09)).toBe('perfect');
+  });
+});
