@@ -1,1 +1,124 @@
-:root { color-scheme: dark; }
+:root {
+  color-scheme: dark;
+  /* lacquer stage, ivory keys, brass hardware */
+  --midnight: #101632;
+  --midnight-2: #18204a;
+  --midnight-3: #232c5e;
+  --ivory: #f5efe3;
+  --ivory-dim: #b9b2a4;
+  --brass: #e7b65a;
+  --brass-deep: #b98a32;
+  --right: #38bdf8;
+  --right-deep: #2563eb;
+  --left: #fb923c;
+  --left-deep: #f43f5e;
+  --danger: #fb7185;
+  --font: ui-rounded, 'SF Pro Rounded', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --sat: env(safe-area-inset-top, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  font-family: var(--font);
+  color: var(--ivory);
+  background: var(--midnight);
+  -webkit-text-size-adjust: 100%;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: var(--midnight);
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+#app {
+  position: fixed;
+  inset: 0;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--brass);
+  outline-offset: 2px;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+.btn-primary {
+  min-height: 56px;
+  padding: 0 28px;
+  border-radius: 18px;
+  background: var(--brass);
+  color: #1d1606;
+  font-weight: 800;
+  font-size: 19px;
+  letter-spacing: 0.01em;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.35) inset, 0 8px 24px rgba(231, 182, 90, 0.25);
+  transition: transform 0.12s ease;
+}
+.btn-primary:active {
+  transform: scale(0.97);
+}
+
+.btn-quiet {
+  min-height: 48px;
+  padding: 0 18px;
+  border-radius: 14px;
+  background: var(--midnight-3);
+  font-weight: 650;
+  font-size: 16px;
+}
+.btn-quiet:active {
+  background: #2d386f;
+}
+
+.icon-btn {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  background: rgba(35, 44, 94, 0.85);
+}
+.icon-btn:active {
+  background: #2d386f;
+}
+.icon-btn svg {
+  width: 24px;
+  height: 24px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
