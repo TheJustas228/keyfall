@@ -8,9 +8,12 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build:ios": "CAPACITOR=1 vite build && cap sync ios"
   },
   "devDependencies": {
+    "@capacitor/assets": "^4.0.0",
+    "@capacitor/cli": "^8.6.2",
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@tsconfig/svelte": "^5.0.8",
     "@types/node": "^24.19.2",
@@ -20,5 +23,10 @@
     "vite": "^8.3.6",
     "vite-plugin-pwa": "^2.0.0",
     "vitest": "^5.1.0"
+  },
+  "dependencies": {
+    "@capacitor/core": "^8.6.2",
+    "@capacitor/haptics": "^8.0.2",
+    "@capacitor/ios": "^8.6.2"
   }
 }

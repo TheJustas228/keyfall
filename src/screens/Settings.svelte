@@ -4,6 +4,9 @@
   import { app, updateSettings } from '../lib/ui/store.svelte';
   import { piano } from '../lib/audio/piano';
   import { startListening, MicError, type Listener } from '../lib/audio/listen';
+  import { Capacitor } from '@capacitor/core';
+
+  const native = Capacitor.isNativePlatform();
 
   let { onexit }: { onexit: () => void } = $props();
 
@@ -153,7 +156,9 @@
         Piano sound: Salamander Grand Piano by Alexander Holm, CC BY 3.0. Classical scores: the Mutopia Project (public domain and CC BY-SA, credited on each
         song). Easy songs are simplified arrangements of public-domain melodies.
       </p>
-      <p class="help">To install Keyfall, open it in Safari, tap Share, then Add to Home Screen. It then works offline.</p>
+      {#if !native}
+        <p class="help">To install Keyfall, open it in Safari, tap Share, then Add to Home Screen. It then works offline.</p>
+      {/if}
     </section>
   </div>
 </div>

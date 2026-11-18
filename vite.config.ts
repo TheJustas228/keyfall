@@ -4,7 +4,8 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
-  base: '/keyfall/',
+  // the iOS app serves files from its bundle root; the website lives under /keyfall/
+  base: process.env.CAPACITOR ? '/' : '/keyfall/',
   plugins: [
     svelte(),
     VitePWA({

@@ -1,0 +1,98 @@
+name: Build iPhone app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install and test
+        run: |
+          npm ci
+          npm test
+
+      - name: Build the app's web layer and copy it into the iOS project
+        run: |
+          CAPACITOR=1 npx vite build
+          npx cap sync ios
+
+      - name: Build for iPhone (unsigned; Sideloadly signs it with your Apple ID)
+        run: |
+          set -o pipefail
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build/device \
+            MARKETING_VERSION=1.0.${{ github.run_number }} CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build | tail -n 40
+          mkdir -p out/Payload
+          cp -R build/device/Build/Products/Release-iphoneos/App.app out/Payload/
+          (cd out && zip -qry Keyfall.ipa Payload)
+          ls -la out/Keyfall.ipa
+
+      - name: Build for the iPhone simulator
+        run: |
+          set -o pipefail
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build/sim \
+            CODE_SIGNING_ALLOWED=NO build | tail -n 20
+
+      - name: Launch in the simulator and take screenshots
+        run: |
+          mkdir -p shots
+          DEV=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)['devices']
+          ios = [x for k, v in d.items() if 'iOS' in k for x in v]
+          pick = [x for x in ios if 'Pro Max' in x['name']] or [x for x in ios if 'iPhone' in x['name']]
+          print(pick[-1]['udid'])")
+          echo "Simulator: $DEV"
+          xcrun simctl boot "$DEV"
+          xcrun simctl bootstatus "$DEV" -b
+          xcrun simctl install "$DEV" build/sim/Build/Products/Release-iphonesimulator/App.app
+          xcrun simctl launch "$DEV" com.keyfall.piano
+          sleep 6
+          xcrun simctl io "$DEV" screenshot shots/1-launch.png
+          sleep 10
+          xcrun simctl io "$DEV" screenshot shots/2-home.png
+          xcrun simctl spawn "$DEV" log show --last 3m --style compact --predicate 'process == "App"' > shots/app-log.txt || true
+          grep -iE "error|exception|⚡️" shots/app-log.txt | tail -n 60 || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keyfall-ios
+          path: |
+            out/Keyfall.ipa
+            shots/
+
+      - name: Publish the app file
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ios-build-${{ github.run_number }}
+          name: Keyfall for iPhone (build ${{ github.run_number }})
+          body: |
+            Install with Sideloadly on your Windows PC: drag Keyfall.ipa into Sideloadly, enter your Apple ID, press Start.
+            Always-latest download link: https://github.com/${{ github.repository }}/releases/latest/download/Keyfall.ipa
+          files: out/Keyfall.ipa
+          make_latest: true

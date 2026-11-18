@@ -4,11 +4,19 @@ A falling-notes piano trainer built for iPhone (a home-screen web app). Pick a s
 level for each hand, and play along on the screen or on a real piano. In "My piano" mode the
 phone listens through the microphone.
 
-## Install on iPhone
+## Install the iPhone app (free, with Sideloadly on Windows)
 
-1. Open the app's address in **Safari**.
-2. Tap **Share**, then **Add to Home Screen**.
-3. Open Keyfall from the home screen. It runs full screen and works offline.
+1. Download **Keyfall.ipa**: https://github.com/TheJustas228/keyfall/releases/latest/download/Keyfall.ipa
+2. On your PC, install **Sideloadly** (sideloadly.io) plus **iTunes** and **iCloud** from apple.com
+   (the Apple website versions, not the Microsoft Store ones).
+3. Connect the iPhone with a cable, unlock it, and tap **Trust**.
+4. Drag `Keyfall.ipa` into Sideloadly, type your Apple ID email, press **Start**, and enter your Apple ID password.
+5. On the iPhone, turn on **Settings › Privacy & Security › Developer Mode** (the phone restarts).
+   Then open **Settings › General › VPN & Device Management**, tap your Apple ID, and tap **Trust**.
+6. Open Keyfall. Free Apple IDs make the install expire after 7 days: repeat step 4 weekly,
+   or turn on Sideloadly's auto-refresh.
+
+The same app also runs in Safari at https://thejustas228.github.io/keyfall/.
 
 ## Practice modes
 
@@ -32,7 +40,8 @@ npm run dev     # local dev server
 npm run build   # production build in dist/
 ```
 
-Pushing to `main` deploys to GitHub Pages through `.github/workflows/deploy.yml`.
+Pushing to `main` deploys the website (`.github/workflows/deploy.yml`) and builds `Keyfall.ipa` on a macOS runner
+(`.github/workflows/ios.yml`), published as the latest GitHub Release. The native shell is Capacitor (`ios/`).
 
 ## Credits
 
