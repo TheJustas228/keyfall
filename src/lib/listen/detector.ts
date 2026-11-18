@@ -12,10 +12,14 @@ const RISE = 2.2; // energy must exceed this × its recent minimum
 const BASELINE_RATIO = 4;
 const TAU_MS = 400;
 const REFRACTORY_MS = 120;
-const CONFIRM_MIN_MS = 28; // wait for a sharper spectrum before trusting a rise
+const CONFIRM_MIN_MS = 45; // wait for a sharper spectrum before trusting a rise
+const CONFIRM_MIN_EXPECTED_MS = 28; // expected notes have the pitch-centre test, so they can confirm sooner
 const CONFIRM_MAX_MS = 160;
 const EXPECTED_RISE = 1.5;
-const EXPECTED_NEIGHBOUR = 0.6;
+const EXPECTED_NEIGHBOUR = 0.35; // loose sanity check; the pitch-centre test does the real work
+const CENTRE_CENTS = 35; // an expected note's spectral peak must sit this close to its pitch
+const NOISE_RATIO = 3.5; // a note must stand this far above its own noise floor
+const NOISE_RISE_MS = 2500; // how slowly the noise floor follows rising levels
 const HISTORY_MS = 90;
 const REL_FLOOR = 0.08; // fraction of the loudest note this frame
 const HARMONIC_OF = [12, 19, 24, 28, 31, 34, 36]; // n is the 2nd..8th harmonic of n - k
@@ -33,6 +37,7 @@ export class NoteDetector {
   private lastT = -1;
   private lvl = 0;
   private floorLin: number;
+  private noise = new Float64Array(HI + 1).fill(-1); // per-note adaptive noise floor
 
   constructor(sampleRate: number, fftSize: number, opts: { sensitivity?: number } = {}) {
     this.binHz = sampleRate / fftSize;
@@ -49,7 +54,7 @@ export class NoteDetector {
       });
     }
     const s = Math.min(1, Math.max(0, opts.sensitivity ?? 0.5));
-    this.floorLin = 10 ** ((-70 + (0.5 - s) * 30) / 20);
+    this.floorLin = 10 ** ((-92 + (0.5 - s) * 30) / 20);
   }
 
   level(): number {
@@ -104,14 +109,15 @@ export class NoteDetector {
       let recentMin = v;
       for (const h of this.history) recentMin = Math.min(recentMin, h.e[m]);
       const exp = expected?.has(m) ?? false;
-      const loudEnough = v >= this.floorLin && (exp || v >= REL_FLOOR * frameMax);
+      const floor = Math.max(this.floorLin, this.noise[m] * NOISE_RATIO);
+      const loudEnough = v >= floor && (exp || v >= REL_FLOOR * frameMax);
       const rising = exp ? v > EXPECTED_RISE * recentMin : v > RISE * recentMin && v > BASELINE_RATIO * this.baseline[m];
       const free = timeMs - this.lastOnset[m] >= REFRACTORY_MS;
       if (rising && loudEnough && free && timeMs - this.candidateSince[m] > CONFIRM_MAX_MS) this.candidateSince[m] = timeMs;
       const age = timeMs - this.candidateSince[m];
-      if (age < CONFIRM_MIN_MS || age > CONFIRM_MAX_MS || !free) continue;
+      if (age < (exp ? CONFIRM_MIN_EXPECTED_MS : CONFIRM_MIN_MS) || age > CONFIRM_MAX_MS || !free) continue;
       const neighbour = Math.max(e[m - 1], m === HI ? 0 : e[m + 1]);
-      const localMax = exp ? v >= EXPECTED_NEIGHBOUR * neighbour : v >= neighbour;
+      const localMax = exp ? v >= EXPECTED_NEIGHBOUR * neighbour && this.centred(magDb, m) : v >= neighbour;
       if (loudEnough && localMax && this.grounded[m] && (exp || !this.isHarmonic(m))) {
         onsets.push(m);
         this.lastOnset[m] = timeMs;
@@ -119,14 +125,50 @@ export class NoteDetector {
       }
     }
 
-    // update baselines: slow rise, fast fall
+    // update baselines (slow rise, fast fall) and the much slower noise floors
     const a = Math.min(1, dt / TAU_MS);
+    const an = Math.min(1, dt / NOISE_RISE_MS);
     for (let m = LO; m <= HI; m++) {
       const b = this.baseline[m];
       this.baseline[m] = e[m] > b ? b + a * (e[m] - b) : 0.5 * (b + e[m]);
+      const nf = this.noise[m];
+      this.noise[m] = nf < 0 ? e[m] : e[m] < nf ? 0.7 * nf + 0.3 * e[m] : nf + an * (e[m] - nf);
     }
     this.history.push({ t: timeMs, e: Float64Array.from(e) });
     return onsets;
+  }
+
+  /**
+   * True when the spectral peak around note m's fundamental (or 2nd/3rd harmonic for low
+   * notes) sits on m's pitch. Energy leaking in from a neighbouring note peaks at the
+   * edge of the window instead, so a played E4 is never mistaken for an expected F4.
+   */
+  private centred(magDb: Float32Array, m: number): boolean {
+    const f0 = 440 * 2 ** ((m - 69) / 12);
+    const partials = m < 48 ? 3 : 2;
+    let strongest = -Infinity;
+    for (let h = 1; h <= partials; h++) {
+      const kc = Math.round((f0 * h) / this.binHz);
+      if (kc + 2 < magDb.length) strongest = Math.max(strongest, magDb[kc]);
+    }
+    for (let h = 1; h <= partials; h++) {
+      const f = f0 * h;
+      const kc = Math.round(f / this.binHz);
+      const kLo = Math.max(1, Math.min(Math.floor((f * 2 ** (-0.6 / 12)) / this.binHz), kc - 2));
+      const kHi = Math.min(magDb.length - 2, Math.max(Math.ceil((f * 2 ** (0.6 / 12)) / this.binHz), kc + 2));
+      let k = kLo;
+      for (let i = kLo + 1; i <= kHi; i++) if (magDb[i] > magDb[k]) k = i;
+      if (k === kLo || k === kHi) continue; // peak belongs to a neighbour
+      if (magDb[k] < strongest - 14) continue; // too weak to count
+      const [a, b, c] = [magDb[k - 1], magDb[k], magDb[k + 1]];
+      const den = a - 2 * b + c;
+      const delta = den !== 0 ? (0.5 * (a - c)) / den : 0;
+      const fPeak = (k + delta) * this.binHz;
+      const cents = Math.abs(1200 * Math.log2(fPeak / f));
+      const tol = Math.max(CENTRE_CENTS, 1200 * Math.log2((f + 0.45 * this.binHz) / f));
+      if (cents <= tol) return true;
+    }
+    return false;
   }
 
   /** True when note m is better explained as a harmonic of a stronger lower note. */

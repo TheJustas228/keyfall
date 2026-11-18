@@ -173,3 +173,49 @@ describe('NoteDetector with expected notes (template matching)', () => {
     expect(got).toEqual([]);
   });
 });
+
+/** A tone made only of overtones 2..8, like a low note through a phone mic that cuts the bass. */
+const noFundamental = (midi: number, t0: number, amp = 0.1) => (t: number) => {
+  if (t < t0) return 0;
+  const f = freq(midi);
+  let s = 0;
+  HARM.forEach((a, h) => {
+    if (h > 0) s += a * Math.sin(2 * Math.PI * f * (h + 1) * (t - t0));
+  });
+  return amp * Math.exp(-(t - t0) / 1.5) * s;
+};
+
+function listenExpecting(signal: (t: number) => number, seconds: number, expected: number[], sensitivity = 0.5) {
+  const det = new NoteDetector(SR, N, { sensitivity });
+  const out: number[] = [];
+  for (let k = 1; k * HOP <= seconds * SR; k++) {
+    const t = (k * HOP) / SR;
+    if (t * SR < N) continue;
+    out.push(...det.process(spectrumAt(signal, t), t * 1000, new Set(expected)));
+  }
+  return out;
+}
+
+describe('NoteDetector in real rooms', () => {
+  test('a quiet piano far from the phone is heard in a quiet room', () => {
+    let seed = 7;
+    const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) * 2 - 1;
+    const room = (t: number) => 0.00017 * rand(); // about −80 dB
+    const quiet = tone(64, 0.5, 1.5, 0.0008);
+    expect(listenExpecting(mix(room, quiet), 1.2, [64])).toContain(64);
+  });
+
+  test('a low expected note is heard even when the mic loses its fundamental', () => {
+    expect(listenExpecting(noFundamental(45, 0.4), 1.1, [45])).toContain(45);
+  });
+
+  test('room noise alone never produces the expected note', () => {
+    let seed = 3;
+    const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) * 2 - 1;
+    expect(listenExpecting(() => 0.0055 * rand(), 1.5, [64, 60, 67])).toEqual([]);
+  });
+
+  test('a wrong neighbouring note is not accepted as the expected one', () => {
+    expect(listenExpecting(tone(64, 0.4), 1.1, [65])).not.toContain(65);
+  });
+});
