@@ -12,6 +12,9 @@ export interface CatalogEntry {
   art: SongArt;
   credit?: string;
   kind: 'midi' | 'notation' | 'placeholder' | 'import';
+  /** planet colours (see ui/planets.ts PALETTES) */
+  palette: string;
+  genre: 'Classical' | 'Traditional' | 'Imported';
   file?: string;
   notation?: NotationSong;
   importId?: string;
@@ -20,8 +23,16 @@ export interface CatalogEntry {
 const MUTOPIA_PD = 'Score from the Mutopia Project, public domain.';
 const mutopiaCC = (v: string) => `Score from the Mutopia Project, licensed CC BY-SA ${v}.`;
 
+const PALETTE: Record<string, string> = {
+  'fur-elise': 'rose', moonlight: 'cobalt', 'prelude-c': 'gold', 'minuet-g': 'teal', gymnopedie: 'ash', 'old-french-song': 'ember',
+  arabesque: 'teal', 'sonata-facile': 'violet', gnossienne: 'ash', entertainer: 'gold', 'alla-turca': 'crimson', 'clair-de-lune': 'cobalt',
+  nocturne: 'violet', 'mountain-king': 'crimson', 'river-flows': 'cobalt',
+};
+const CYCLE = ['ember', 'gold', 'rose', 'teal', 'violet', 'crimson', 'cobalt'];
+const paletteFor = (id: string) => PALETTE[id] ?? CYCLE[[...id].reduce((a, c) => a + c.charCodeAt(0), 0) % CYCLE.length];
+
 const midi = (id: string, title: string, composer: string, difficulty: 1 | 2 | 3, art: SongArt, credit = MUTOPIA_PD): CatalogEntry => ({
-  id, title, composer, difficulty, art, credit, kind: 'midi', file: `songs/${id}.mid`,
+  id, title, composer, difficulty, art, credit, kind: 'midi', file: `songs/${id}.mid`, palette: paletteFor(id), genre: 'Classical',
 });
 
 const BUILTIN_MIDI: CatalogEntry[] = [
@@ -48,12 +59,15 @@ const RIVER: CatalogEntry = {
   difficulty: 2,
   art: { emoji: '🌊', from: '#38bdf8', to: '#1e40af' },
   kind: 'placeholder',
+  palette: 'cobalt',
+  genre: 'Classical',
   credit: 'This song is still under copyright, so it can’t be built in. Add it from a MIDI file and it will appear here.',
 };
 
 const EASY: CatalogEntry[] = EASY_SONGS.map((s) => ({
   id: s.id, title: s.title, composer: s.composer, difficulty: s.difficulty, art: s.art,
-  credit: 'Simplified arrangement of a public-domain melody.', kind: 'notation', notation: s,
+  credit: 'Simplified arrangement of a public-domain melody.', kind: 'notation', notation: s, palette: paletteFor(s.id),
+  genre: /traditional|hill/i.test(s.composer) ? 'Traditional' : 'Classical',
 }));
 
 // Order: the user's requested songs first, then easy to hard.
@@ -75,6 +89,8 @@ export function visibleCatalog(imports: ImportMeta[]): CatalogEntry[] {
     difficulty: 2,
     art: RIVER_RE.test(m.title) ? RIVER.art : { emoji: '🎹', from: '#94a3b8', to: '#334155' },
     kind: 'import',
+    palette: RIVER_RE.test(m.title) ? 'cobalt' : paletteFor(m.id),
+    genre: 'Imported',
     importId: m.id,
     credit: 'Imported from a MIDI file.',
   }));

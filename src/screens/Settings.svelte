@@ -45,10 +45,10 @@
 
 <div class="settings">
   <header>
-    <button class="icon-btn" aria-label="Back to song list" onclick={onexit}>
+    <button class="orb-btn" aria-label="Back to song list" onclick={onexit}>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M15 5l-7 7 7 7" /></svg>
     </button>
-    <h1>Settings</h1>
+    <h1 class="serif">Settings</h1>
   </header>
 
   <div class="cols">
@@ -84,6 +84,12 @@
         />
         <p class="help">How fast the notes travel down the screen. Slower gives you more time to read ahead.</p>
       </div>
+
+      <h2>Feel</h2>
+      <label class="toggle">
+        <span>Haptic taps on the piano keys</span>
+        <input type="checkbox" checked={app.settings.haptics} onchange={(e) => updateSettings({ haptics: (e.currentTarget as HTMLInputElement).checked })} />
+      </label>
 
       <h2>Sound</h2>
       <div class="field">
@@ -135,7 +141,7 @@
         />
         <p class="help">Raise it if quiet notes are missed. Lower it if notes you didn’t play show up.</p>
       </div>
-      <button class="btn-quiet" onclick={toggleMic}>{micTest ? 'Stop the test' : 'Test the microphone'}</button>
+      <button class="btn-glass" onclick={toggleMic}>{micTest ? 'Stop the test' : 'Test the microphone'}</button>
       {#if micError}<p class="error">{micError}</p>{/if}
       {#if micTest}
         <div class="meter"><div style:width="{micLevel * 100}%"></div></div>
@@ -166,8 +172,7 @@
     gap: 14px;
   }
   h1 {
-    font-size: 28px;
-    font-weight: 800;
+    font-size: 40px;
   }
   .cols {
     display: grid;
@@ -182,8 +187,9 @@
   }
   h2 {
     margin-top: 22px;
-    font-size: 19px;
-    font-weight: 800;
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: 28px;
   }
   .field {
     display: grid;
@@ -206,12 +212,12 @@
   .toggle input {
     width: 26px;
     height: 26px;
-    accent-color: var(--brass);
+    accent-color: var(--ember);
   }
   input[type='range'] {
     width: 100%;
     height: 40px;
-    accent-color: var(--brass);
+    accent-color: var(--ember);
   }
   .help {
     color: var(--ivory-dim);
@@ -231,7 +237,7 @@
   }
   .meter div {
     height: 100%;
-    background: var(--brass);
+    background: linear-gradient(90deg, var(--ember), var(--gold));
     transition: width 0.05s linear;
   }
   .heard {

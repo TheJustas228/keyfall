@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { app } from '../lib/ui/store.svelte';
-  import { layoutKeys, hitTest, type Key } from '../lib/game/keyboard';
+  import { layoutKeys, hitTest, unproject, type Key } from '../lib/game/keyboard';
   import { KeyInput, type KeyChange } from '../lib/game/keyinput';
-  import { createRenderer, type PressKind, type Renderer, type Rising } from '../lib/game/renderer';
+  import { createRenderer, PERSPECTIVE, type PressKind, type Renderer, type Rising } from '../lib/game/renderer';
+  import { haptic } from '../lib/ui/haptics';
   import { isWhite } from '../lib/game/prepare';
   import { piano } from '../lib/audio/piano';
 
@@ -61,6 +62,7 @@
       if (r) r.t1 = now;
     }
     if (c.on !== undefined) {
+      haptic();
       piano.noteOn(c.on, 0.8);
       pressed.set(c.on, c.on >= 60 ? 'R' : 'L');
       rising.push({ midi: c.on, t0: now, t1: null });
@@ -71,7 +73,8 @@
     const r = canvas.getBoundingClientRect();
     const y = e.clientY - r.top - kb.y;
     if (y < -24 || y > kb.h + 10) return null;
-    return hitTest(keys, e.clientX - r.left - kb.x, Math.max(0, y), kb.h);
+    const x = unproject(e.clientX - r.left - kb.x, Math.max(0, y) / kb.h, kb.w, PERSPECTIVE);
+    return hitTest(keys, x, Math.max(0, y), kb.h);
   }
 
   function loop() {
@@ -129,23 +132,23 @@
     onlostpointercapture={(e) => apply(input.up(e.pointerId))}
   ></canvas>
   <header>
-    <button class="icon-btn" aria-label="Back to song list" onclick={onexit}>
+    <button class="orb-btn" aria-label="Back to song list" onclick={onexit}>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M15 5l-7 7 7 7" /></svg>
     </button>
-    <h1>Free play</h1>
+    <h1 class="serif">Free play</h1>
     <div class="group" aria-label="Move the keyboard">
-      <button class="icon-btn" aria-label="Lower notes" disabled={low <= 24} onclick={() => (low = Math.max(24, low - 12))}>
+      <button class="orb-btn" aria-label="Lower notes" disabled={low <= 24} onclick={() => (low = Math.max(24, low - 12))}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M15 5l-7 7 7 7" /></svg>
       </button>
       <span class="range">{rangeLabel}</span>
-      <button class="icon-btn" aria-label="Higher notes" disabled={hi >= 96} onclick={() => (low = Math.min(96 - octaves * 12, low + 12))}>
+      <button class="orb-btn" aria-label="Higher notes" disabled={hi >= 96} onclick={() => (low = Math.min(96 - octaves * 12, low + 12))}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M9 5l7 7-7 7" /></svg>
       </button>
     </div>
     <div class="group" aria-label="Number of keys">
-      <button class="icon-btn" aria-label="Fewer, bigger keys" disabled={octaves <= 1} onclick={() => (octaves -= 1)}>−</button>
+      <button class="orb-btn" aria-label="Fewer, bigger keys" disabled={octaves <= 1} onclick={() => (octaves -= 1)}>−</button>
       <span class="range">{octaves} {octaves === 1 ? 'octave' : 'octaves'}</span>
-      <button class="icon-btn" aria-label="More keys" disabled={octaves >= 5} onclick={() => { octaves += 1; low = Math.min(low, 96 - octaves * 12); }}>+</button>
+      <button class="orb-btn" aria-label="More keys" disabled={octaves >= 5} onclick={() => { octaves += 1; low = Math.min(low, 96 - octaves * 12); }}>+</button>
     </div>
   </header>
 </div>
@@ -154,6 +157,7 @@
   .free {
     position: fixed;
     inset: 0;
+    background: #000;
     overflow: hidden;
     touch-action: none;
   }
@@ -179,8 +183,7 @@
     gap: 10px 16px;
   }
   h1 {
-    font-size: 22px;
-    font-weight: 800;
+    font-size: 34px;
     margin-right: auto;
   }
   .group {
@@ -188,11 +191,10 @@
     align-items: center;
     gap: 8px;
   }
-  .icon-btn {
+  .orb-btn {
     font-size: 24px;
-    font-weight: 700;
   }
-  .icon-btn:disabled {
+  .orb-btn:disabled {
     opacity: 0.35;
   }
   .range {

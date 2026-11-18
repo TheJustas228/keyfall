@@ -1,84 +1,106 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { app } from '../lib/ui/store.svelte';
-  import { prepare, type Prepared } from '../lib/game/prepare';
+  import { fade, fly } from 'svelte/transition';
+  import { app, type FinishStats } from '../lib/ui/store.svelte';
+  import { prepare, isWhite, type Prepared } from '../lib/game/prepare';
   import { Session, type Judgment } from '../lib/game/session';
-  import { layoutKeys, hitTest, type Key } from '../lib/game/keyboard';
+  import { AutoScheduler } from '../lib/game/autoscheduler';
+  import { layoutKeys, hitTest, unproject, type Key } from '../lib/game/keyboard';
   import { KeyInput, type KeyChange } from '../lib/game/keyinput';
-  import { createRenderer, type PressKind, type Renderer } from '../lib/game/renderer';
+  import { createRenderer, PERSPECTIVE, type PressKind, type Renderer } from '../lib/game/renderer';
   import { piano } from '../lib/audio/piano';
-  import { startListening, MicError, type Listener } from '../lib/audio/listen';
+  import { startListening, MicError, MIC_LAG, type Listener } from '../lib/audio/listen';
+  import { preferFlats } from '../lib/music/spelling';
+  import { haptic } from '../lib/ui/haptics';
   import type { Note, Song } from '../lib/music/types';
   import type { SongConfig } from '../lib/storage/prefs';
-  import type { FinishStats } from '../lib/ui/store.svelte';
-  import { preferFlats } from '../lib/music/spelling';
+  import type { CatalogEntry } from '../lib/songs/catalog';
 
   let {
+    entry,
     song,
     config,
     onexit,
     onfinish,
-  }: { song: Song; config: SongConfig; onexit: () => void; onfinish: (s: FinishStats) => void } = $props();
+  }: { entry: CatalogEntry; song: Song; config: SongConfig; onexit: () => void; onfinish: (s: FinishStats) => void } = $props();
 
-  // ---------- setup (fixed for the life of this player) ----------
+  // ---------- fixed setup for this run ----------
   // svelte-ignore state_referenced_locally
   const mode = config.mode;
   const watch = mode === 'watch';
   const byStart = (a: Note, b: Note) => a.start - b.start || a.midi - b.midi;
   // svelte-ignore state_referenced_locally
-  const base = prepare(song, watch ? { R: 'full', L: 'full' } : config.levels);
+  const allNotes = [...song.notes].sort(byStart);
   // svelte-ignore state_referenced_locally
-  const prepared: Prepared = watch ? { ...base, required: [], auto: [...song.notes].sort(byStart), steps: [] } : base;
-  const LEAD_IN = 2.5;
+  const base = prepare(song, watch ? { R: 'full', L: 'full' } : config.levels);
+  const prepared: Prepared = watch ? { ...base, required: [], auto: allNotes, steps: [] } : base;
+  const previewPrepared: Prepared = { ...base, required: [], auto: allNotes, steps: [] };
   // svelte-ignore state_referenced_locally
   const flats = preferFlats(song.notes);
+  const LEAD_IN = 2.5;
 
   // svelte-ignore state_referenced_locally
   let session = $state.raw(new Session(prepared, mode, config.speed, { leadIn: LEAD_IN }));
   // svelte-ignore state_referenced_locally
-  let input = $state(config.input);
+  const previewEnd = session.firstStart + Math.min(9, Math.max(4, session.duration * 0.3));
+  // svelte-ignore state_referenced_locally
+  let preview = $state.raw<Session | null>(mode === 'learn' ? new Session(previewPrepared, 'watch', config.speed, { leadIn: LEAD_IN }) : null);
+  // svelte-ignore state_referenced_locally
+  let input = $state<'touch' | 'listen'>(watch ? 'touch' : config.input);
   // svelte-ignore state_referenced_locally
   let speed = $state(config.speed);
   let paused = $state(false);
   let started = $state(false);
   // svelte-ignore state_referenced_locally
-  let needsTapToListen = $state(config.input === 'listen');
+  let needsTapToListen = $state(input === 'listen');
   let progress = $state(0);
   let loopA = $state<number | null>(null);
   let loopB = $state<number | null>(null);
   let portrait = $state(false);
   let rotateDismissed = $state(false);
-  let waitingLong = $state(false);
   let micLevel = $state(0);
-  let banner = $state('');
+  let coach = $state<{ text: string; id: number; sticky: boolean } | null>(null);
+  let showMap = $state(true);
   let scrubbing = $state(false);
 
   let container: HTMLDivElement;
   let canvas: HTMLCanvasElement;
   let probe: HTMLDivElement;
+  let flare: HTMLDivElement;
   let renderer: Renderer;
   let keys: Key[] = [];
   let kb = { x: 0, y: 0, w: 0, h: 0 };
   let stageTop = 0;
   const keyInput = new KeyInput();
   const userPressed = new Map<number, PressKind>();
-  const recentAuto = new Map<number, number>(); // midi → time (ms) it sounded, for the mic echo guard
+  const recentAuto = new Map<number, number>();
+  let scheduler = new AutoScheduler(previewPrepared.auto);
   let listener: Listener | null = null;
-  let autoIdx = 0;
   let raf = 0;
   let lastT = 0;
   let lastMiss = 0;
   let waitingSince = 0;
+  let wrongRun = 0;
+  let heat = 0;
   let done = false;
   let destroyed = false;
   let wakeLock: { release(): Promise<void> } | null = null;
-  let bannerTimer = 0;
+  let coachTimer = 0;
+  let coachId = 0;
+  let mapTimer = 0;
+  let saidWaitHint = false;
 
-  function flash(msg: string) {
-    banner = msg;
-    clearTimeout(bannerTimer);
-    bannerTimer = window.setTimeout(() => (banner = ''), 2600);
+  function say(text: string, ms = 3400, sticky = false) {
+    clearTimeout(coachTimer);
+    coach = { text, id: ++coachId, sticky };
+    if (!sticky) coachTimer = window.setTimeout(() => (coach = null), ms);
   }
+  function flashMap(ms = 3800) {
+    showMap = true;
+    clearTimeout(mapTimer);
+    mapTimer = window.setTimeout(() => (showMap = false), ms);
+  }
+  const active = () => preview ?? session;
 
   // ---------- layout ----------
   function layout() {
@@ -90,16 +112,33 @@
     const sat = parseFloat(cs.paddingTop) || 0;
     const sab = parseFloat(cs.paddingBottom) || 0;
     portrait = H > W;
-    const kbH = portrait ? Math.min(210, Math.max(140, H * 0.2)) : Math.min(175, Math.max(108, H * 0.32));
-    kb = { x: sal + 6, y: H - Math.max(sab, 6) - kbH, w: W - sal - sar - 12, h: kbH };
-    stageTop = sat + 60;
+    const kbH = portrait ? Math.min(220, Math.max(150, H * 0.21)) : Math.min(190, Math.max(116, H * 0.36));
+    kb = { x: sal + 4, y: H - Math.max(sab, 4) - kbH, w: W - sal - sar - 8, h: kbH };
+    stageTop = sat + 62;
     keys = layoutKeys(prepared.lo, prepared.hi, kb.w);
     renderer.resize(W, H, Math.min(window.devicePixelRatio || 1, 3));
   }
 
-  // ---------- audio scheduling ----------
+  // ---------- audio ----------
+  function scheduleAuto() {
+    const s = active();
+    const now = piano.now();
+    const volume = input === 'listen' ? 0.55 : 1;
+    for (const n of scheduler.due(s.autoHorizon(0.14), s.clock, s.epoch)) {
+      const delay = Math.max(0, (n.start - s.clock) / s.speed);
+      piano.schedule(n.midi, (watch || preview ? n.vel : n.vel * 0.8) * volume, now + delay, n.dur / s.speed);
+      recentAuto.set(n.midi, performance.now() + delay * 1000);
+    }
+  }
+  function rescheduleNow() {
+    piano.cancelScheduled();
+    scheduler = new AutoScheduler(preview ? previewPrepared.auto : prepared.auto);
+  }
+
+  // ---------- input ----------
   function lowerBound(arr: Note[], t: number) {
-    let lo = 0, hi = arr.length;
+    let lo = 0,
+      hi = arr.length;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
       if (arr[mid].start < t) lo = mid + 1;
@@ -107,45 +146,38 @@
     }
     return lo;
   }
-
-  function resetAuto() {
-    piano.cancelScheduled();
-    autoIdx = lowerBound(prepared.auto, session.clock);
-  }
-
-  function scheduleAuto() {
-    const auto = prepared.auto;
-    const horizon = session.autoHorizon(0.12);
-    const now = piano.now();
-    const volume = input === 'listen' ? 0.55 : 1;
-    while (autoIdx < auto.length && auto[autoIdx].start <= horizon) {
-      const n = auto[autoIdx++];
-      if (n.start < session.clock - 0.05) continue;
-      const delay = Math.max(0, (n.start - session.clock) / session.speed);
-      piano.schedule(n.midi, (watch ? n.vel : n.vel * 0.8) * volume, now + delay, n.dur / session.speed);
-      recentAuto.set(n.midi, performance.now() + delay * 1000);
-    }
-  }
-
-  // ---------- input ----------
   function handOf(midi: number): 'R' | 'L' {
     const req = prepared.required;
     let best: Note | null = null;
-    for (let i = Math.max(0, lowerBound(req, session.clock - 1)); i < req.length && req[i].start < session.clock + 1; i++) {
+    for (let i = lowerBound(req, session.clock - 1); i < req.length && req[i].start < session.clock + 1; i++) {
       if (req[i].midi === midi && (!best || Math.abs(req[i].start - session.clock) < Math.abs(best.start - session.clock))) best = req[i];
     }
     return best ? best.hand : midi >= 60 ? 'R' : 'L';
   }
 
-  function react(midi: number, j: Judgment | null): PressKind {
-    if (j === null) return 'free';
+  function react(midi: number, j: Judgment | null, touch: boolean): PressKind {
+    if (j === null) {
+      if (touch) haptic();
+      return 'free';
+    }
     if (j === 'wrong') {
-      if (mode === 'play') renderer.pop('✕', frameRef(), '#fda4af', midi);
+      wrongRun++;
+      if (touch) haptic();
+      if (mode === 'learn' && wrongRun === 3) say('Look for the glowing key. No rush.');
+      if (mode === 'play') renderer.pop('✕', frameRef(), '#ff8d9a', midi);
       return 'wrong';
     }
+    wrongRun = 0;
+    if (touch) haptic();
     const hand = handOf(midi);
     renderer.burst(midi, frameRef(), hand);
-    if (mode === 'play') renderer.pop(j === 'perfect' ? 'Perfect' : 'Good', frameRef(), j === 'perfect' ? '#e7b65a' : '#f5efe3', midi);
+    heat = Math.min(1, heat + 0.35);
+    if (mode === 'play') renderer.pop(j === 'perfect' ? 'Perfect' : 'Good', frameRef(), j === 'perfect' ? '#ffc46b' : '#f6efe9', midi);
+    const c = session.stats.combo;
+    if (c === 10 || c === 25 || c === 50 || c === 100 || (c > 100 && c % 100 === 0)) {
+      say(c >= 50 ? `${c} in a row. You’re on fire!` : `${c} in a row!`, 2200);
+      heat = 1;
+    }
     return hand;
   }
 
@@ -157,20 +189,20 @@
     if (change.on !== undefined) {
       const midi = change.on;
       piano.noteOn(midi, 0.8);
-      const j = started && !paused ? session.press(midi) : null;
-      userPressed.set(midi, react(midi, j));
+      const j = started && !paused && !preview ? session.press(midi) : null;
+      userPressed.set(midi, react(midi, j, true));
       if (j && j !== 'wrong') waitingSince = performance.now();
     }
   }
 
   function midiAt(e: PointerEvent): number | null {
     const r = canvas.getBoundingClientRect();
-    const x = e.clientX - r.left - kb.x;
     const y = e.clientY - r.top - kb.y;
-    if (y < -24 || y > kb.h + 10) return null;
+    if (y < -26 || y > kb.h + 10) return null;
+    const frac = Math.max(0, y) / kb.h;
+    const x = unproject(e.clientX - r.left - kb.x, frac, kb.w, PERSPECTIVE);
     return hitTest(keys, x, Math.max(0, y), kb.h);
   }
-
   function onDown(e: PointerEvent) {
     const midi = midiAt(e);
     if (midi === null) return;
@@ -191,14 +223,23 @@
     }
   }
 
+  function upcomingRequired(): Set<number> {
+    if (mode === 'learn') return session.pendingMidis();
+    const out = new Set<number>();
+    const req = prepared.required;
+    for (let i = lowerBound(req, session.clock - 0.25 * speed); i < req.length && req[i].start < session.clock + 0.35 * speed; i++) out.add(req[i].midi);
+    return out;
+  }
+
   function onMicNotes(midis: number[]) {
-    if (!started || paused) return;
+    if (!started || paused || preview) return;
     const now = performance.now();
+    const lag = (MIC_LAG + (piano.ctx?.baseLatency ?? 0)) * session.speed;
     for (const midi of midis) {
       const t = recentAuto.get(midi);
-      if (t !== undefined && Math.abs(now - t) < 320) continue; // that was the app's own accompaniment
-      const j = session.press(midi);
-      const kind = react(midi, j);
+      if (t !== undefined && Math.abs(now - t) < 320) continue; // the app's own accompaniment
+      const j = session.press(midi, session.clock - lag);
+      const kind = react(midi, j, false);
       userPressed.set(midi, kind);
       if (j && j !== 'wrong') waitingSince = now;
       setTimeout(() => {
@@ -214,56 +255,72 @@
     piano.cancelScheduled();
     releaseAll();
   }
-  function resume() {
+  async function resume() {
+    await piano.ensureStarted();
     paused = false;
     lastT = performance.now();
-    resetAuto();
+    rescheduleNow();
   }
   function restart() {
     session = new Session(prepared, mode, speed, { leadIn: LEAD_IN });
     session.setLoop(loopA, loopB);
+    preview = null;
     lastMiss = 0;
+    wrongRun = 0;
     renderer.clearEffects();
     resume();
+    flashMap();
   }
   function setSpeed(s: number) {
-    speed = Math.round(Math.min(1.2, Math.max(0.4, s)) * 10) / 10;
+    speed = Math.round(Math.min(1.2, Math.max(0.4, s)) * 20) / 20;
     session.speed = speed;
-    resetAuto();
+    if (preview) preview.speed = speed;
+    rescheduleNow();
   }
   function seekTo(t: number) {
-    // seeking to the very start gives a short lead-in so the first notes fall into view
     session.seek(t < 0.5 ? -1.5 * speed : t);
     renderer.clearEffects();
-    resetAuto();
     lastMiss = session.stats.miss;
     progress = session.progress();
+  }
+  function skipPreview() {
+    if (!preview) return;
+    preview = null;
+    rescheduleNow();
+    renderer.clearEffects();
+    session.seek(Math.min(0, session.firstStart - 1.6 * speed));
+    lastMiss = 0;
+    waitingSince = performance.now();
+    say('Off you go, from the top.', 2600);
+    flashMap(3000);
+    if (prepared.auto.length && prepared.required.length) {
+      setTimeout(() => {
+        if (!destroyed) say('Only the colored notes are yours. I play the empty ones.', 4200);
+      }, 2800);
+    }
   }
   function toggleLoop() {
     const t = Math.max(0, session.clock);
     if (loopA === null) {
       loopA = t;
-      flash('Loop start set. Tap the loop button again at the end of the section.');
+      say('Loop start set. Tap again at the end of the section.');
     } else if (loopB === null) {
-      if (t <= loopA + 0.5) {
-        flash('Play a little further, then set the loop end.');
-        return;
-      }
+      if (t <= loopA + 0.5) return say('Play a little further, then tap to set the loop end.');
       loopB = t;
       session.setLoop(loopA, loopB);
       seekTo(loopA);
-      flash('Looping this section.');
+      say('Looping this section.', 2200);
     } else {
       loopA = loopB = null;
       session.setLoop(null, null);
-      flash('Loop off.');
+      say('Loop off.', 1600);
     }
   }
-
   function scrub(e: PointerEvent) {
     const bar = e.currentTarget as HTMLElement;
     const r = bar.getBoundingClientRect();
     const f = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    if (preview) skipPreview();
     seekTo(f * session.duration);
   }
 
@@ -271,11 +328,14 @@
     needsTapToListen = false;
     await piano.ensureStarted();
     try {
-      listener = await startListening(onMicNotes, app.settings.sensitivity);
-      flash('Listening. Play on your piano.');
+      const l = await startListening(onMicNotes, app.settings.sensitivity, upcomingRequired, () => {
+        if (!destroyed) say('The microphone stopped. Pause, then resume, to keep listening.', 0, true);
+      });
+      if (destroyed) return l.stop();
+      listener = l;
     } catch (e) {
       input = 'touch';
-      flash(e instanceof MicError ? e.message : 'The microphone couldn’t start. Using the screen keys instead.');
+      say(e instanceof MicError ? e.message + ' Using the screen keys for now.' : 'The microphone couldn’t start. Using the screen keys for now.', 0, true);
     }
     start();
   }
@@ -284,7 +344,13 @@
     started = true;
     lastT = performance.now();
     waitingSince = performance.now();
-    resetAuto();
+    rescheduleNow();
+    flashMap();
+    if (coach?.sticky) return;
+    if (preview) say('Take a listen, then you try.');
+    else if (mode === 'play') say('Let’s play through it once. Mistakes are totally fine.');
+    else if (watch) say('Sit back and listen.');
+    else say(input === 'listen' ? 'I’m listening. Play the glowing keys on your piano.' : 'Play the glowing keys. I’ll wait for you.');
   }
 
   function finish() {
@@ -292,27 +358,31 @@
     done = true;
     piano.cancelScheduled();
     const s = session.stats;
+    say(watch ? 'That’s the whole song.' : 'Beautiful. Let’s see how it went.', 2000);
     setTimeout(() => {
       if (destroyed) return;
-      onfinish({ stars: s.stars(), accuracy: s.accuracy(), perfect: s.perfect, good: s.good, miss: s.miss, wrong: s.wrong, bestCombo: s.bestCombo });
-    }, 600);
+      onfinish({ stars: s.stars(), accuracy: s.accuracy(), perfect: s.perfect, good: s.good, miss: s.miss, wrong: s.wrong, bestCombo: s.bestCombo, timeline: session.timeline(48) });
+    }, 1100);
   }
 
   // ---------- render loop ----------
   const pressed = new Map<number, PressKind>();
+  const noPending = new Set<number>();
   function frameRef() {
+    const s = active();
     return {
-      clock: session.clock,
-      window: app.settings.fallSeconds * session.speed,
+      clock: s.clock,
+      window: app.settings.fallSeconds * s.speed,
       keys,
       kb,
       stageTop,
-      required: prepared.required,
-      auto: prepared.auto,
+      required: preview ? [] : prepared.required,
+      auto: preview ? previewPrepared.auto : prepared.auto,
       dimAuto: !watch,
+      preview: !!preview,
       judgment: (n: Note) => session.judgmentOf(n),
       pressed,
-      pending: session.pendingMidis(),
+      pending: preview ? noPending : session.pendingMidis(),
       labels: app.settings.labels,
       flats,
       keyLabels: app.settings.keyLabels,
@@ -325,31 +395,39 @@
     const dt = (t - lastT) / 1000;
     lastT = t;
     if (started && !paused && !done) {
-      session.update(dt);
-      scheduleAuto();
-      if (session.stats.miss > lastMiss) {
-        lastMiss = session.stats.miss;
-        renderer.pop('Miss', frameRef(), '#94a3b8');
-      }
-      if (session.waiting) {
-        if (performance.now() - waitingSince > 2200) waitingLong = true;
+      if (preview) {
+        preview.update(dt);
+        scheduleAuto();
+        if (preview.clock >= previewEnd) skipPreview();
       } else {
-        waitingSince = performance.now();
-        waitingLong = false;
+        session.update(dt);
+        scheduleAuto();
+        if (session.stats.miss > lastMiss) {
+          lastMiss = session.stats.miss;
+          renderer.pop('Miss', frameRef(), '#8f8496');
+        }
+        if (session.waiting) {
+          if (!saidWaitHint && performance.now() - waitingSince > 6000) {
+            saidWaitHint = true;
+            say('Take your time. Play the glowing key.');
+          }
+        } else waitingSince = performance.now();
+        if (session.finished) finish();
       }
-      if (session.finished) finish();
     }
-    // keys lit by the music itself
     pressed.clear();
-    const auto = prepared.auto;
-    for (let i = lowerBound(auto, session.clock - 6); i < auto.length && auto[i].start <= session.clock; i++) {
+    const s = active();
+    const auto = preview ? previewPrepared.auto : prepared.auto;
+    for (let i = lowerBound(auto, s.clock - 6); i < auto.length && auto[i].start <= s.clock; i++) {
       const n = auto[i];
-      if (n.start + n.dur > session.clock) pressed.set(n.midi, watch ? n.hand : n.hand === 'R' ? 'autoR' : 'autoL');
+      if (n.start + n.dur > s.clock) pressed.set(n.midi, watch ? n.hand : n.hand === 'R' ? 'autoR' : 'autoL');
     }
     for (const [m, k] of userPressed) pressed.set(m, k);
     renderer.draw(frameRef());
+    heat = Math.max(0, heat - dt * 1.6);
+    if (flare) flare.style.opacity = String(0.15 + heat * 0.85);
     if (!scrubbing) {
-      const p = session.progress();
+      const p = preview ? 0 : session.progress();
       if (Math.abs(p - progress) > 0.001) progress = p;
     }
     if (listener) micLevel = listener.level();
@@ -358,12 +436,13 @@
   // ---------- lifecycle ----------
   async function lockScreen() {
     try {
-      wakeLock = (await (navigator as Navigator & { wakeLock?: { request(t: 'screen'): Promise<{ release(): Promise<void> }> } }).wakeLock?.request('screen')) ?? null;
+      const l = (await (navigator as Navigator & { wakeLock?: { request(t: 'screen'): Promise<{ release(): Promise<void> }> } }).wakeLock?.request('screen')) ?? null;
+      if (destroyed) l?.release().catch(() => {});
+      else wakeLock = l;
     } catch {
       wakeLock = null;
     }
   }
-
   function onVisibility() {
     if (document.visibilityState === 'hidden') pause();
     else lockScreen();
@@ -375,6 +454,10 @@
     const ro = new ResizeObserver(() => layout());
     ro.observe(container);
     document.addEventListener('visibilitychange', onVisibility);
+    // calls, Siri or alarms stop the audio clock: pause instead of drifting out of sync
+    const offRunning = piano.onRunningChange((running) => {
+      if (!running && started) pause();
+    });
     lockScreen();
     if (!needsTapToListen) start();
     lastT = performance.now();
@@ -383,17 +466,22 @@
       destroyed = true;
       cancelAnimationFrame(raf);
       ro.disconnect();
+      offRunning();
       document.removeEventListener('visibilitychange', onVisibility);
       piano.cancelScheduled();
       releaseAll();
       listener?.stop();
       wakeLock?.release().catch(() => {});
-      clearTimeout(bannerTimer);
+      clearTimeout(coachTimer);
+      clearTimeout(mapTimer);
     };
   });
 
-  const fmt = (s: number) => `${Math.floor(Math.max(0, s) / 60)}:${String(Math.floor(Math.max(0, s) % 60)).padStart(2, '0')}`;
-  const modeLabel = { learn: 'Learn', play: 'Play', watch: 'Watch' }[mode];
+  // mini 88-key map
+  const MAP_WHITES: number[] = [];
+  for (let m = 21; m <= 108; m++) if (isWhite(m)) MAP_WHITES.push(m);
+  const whiteIndex = (m: number) => MAP_WHITES.indexOf(isWhite(m) ? m : m - 1);
+  const ticks = 60;
 </script>
 
 <div class="player" bind:this={container}>
@@ -408,97 +496,127 @@
     oncontextmenu={(e) => e.preventDefault()}
   ></canvas>
 
+  <div class="edge" aria-hidden="true"></div>
+  <div class="edge flare" bind:this={flare} aria-hidden="true"></div>
+
   <header class="hud">
-    <button class="icon-btn" aria-label="Back to song list" onclick={onexit}>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+    <button class="orb" aria-label="Pause" onclick={pause}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="13" r="8" /><path d="M12 9v4l2 2M10 2h4" /></svg>
     </button>
-    <div class="track">
-      <div class="title-row">
-        <span class="title">{song.title}</span>
-        <span class="meta">{modeLabel}{input === 'listen' ? ' with your piano' : ''}</span>
-        <span class="time">{fmt(progress * session.duration)} / {fmt(session.duration)}</span>
+    <div
+      class="bar"
+      role="slider"
+      tabindex="0"
+      aria-label="Song position"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(progress * 100)}
+      onpointerdown={(e) => {
+        scrubbing = true;
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+        scrub(e);
+      }}
+      onpointermove={(e) => scrubbing && scrub(e)}
+      onpointerup={() => (scrubbing = false)}
+      onpointercancel={() => (scrubbing = false)}
+    >
+      <div class="ticks">
+        {#each Array(ticks) as _, i}<i class:big={i % 10 === 0}></i>{/each}
       </div>
-      <div
-        class="bar"
-        role="slider"
-        tabindex="0"
-        aria-label="Song position"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={Math.round(progress * 100)}
-        onpointerdown={(e) => {
-          scrubbing = true;
-          (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-          scrub(e);
-        }}
-        onpointermove={(e) => scrubbing && scrub(e)}
-        onpointerup={() => (scrubbing = false)}
-        onpointercancel={() => (scrubbing = false)}
-      >
-        <div class="bar-track">
-          {#if loopA !== null}
-            <div
-              class="loop-span"
-              style:left="{(loopA / session.duration) * 100}%"
-              style:width="{(((loopB ?? Math.max(loopA, progress * session.duration)) - loopA) / session.duration) * 100}%"
-            ></div>
-          {/if}
-          <div class="bar-fill" style:width="{progress * 100}%"></div>
-        </div>
-      </div>
+      {#if loopA !== null}
+        <div class="loopspan" style:left="{(loopA / session.duration) * 100}%" style:width="{(((loopB ?? Math.max(loopA, progress * session.duration)) - loopA) / session.duration) * 100}%"></div>
+      {/if}
+      <div class="thumb" style:left="calc({progress * 100}% - {progress * 34}px)"></div>
     </div>
     {#if input === 'listen'}
       <div class="mic" title="Microphone level" style:--lvl={micLevel}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></svg>
       </div>
     {/if}
-    <button class="icon-btn" class:on={loopA !== null} aria-label="Loop a section" onclick={toggleLoop}>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l3 3-3 3" /><path d="M4 11V9a4 4 0 0 1 4-4h12" /><path d="M7 22l-3-3 3-3" /><path d="M20 13v2a4 4 0 0 1-4 4H4" /></svg>
-    </button>
-    <button class="speed" aria-label="Speed" onclick={pause}>{Math.round(speed * 100)}%</button>
-    <button class="icon-btn" aria-label="Pause" onclick={pause}>
-      <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.2" /><rect x="14" y="5" width="4" height="14" rx="1.2" /></svg>
-    </button>
+    {#if preview}
+      <button class="orb" aria-label="Skip the preview" onclick={skipPreview}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M4 6l8 6-8 6zM12 6l8 6-8 6z" /></svg>
+      </button>
+    {:else if !watch}
+      <button class="orb" class:on={loopA !== null} aria-label="Loop a section" onclick={toggleLoop}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l3 3-3 3" /><path d="M4 11V9a4 4 0 0 1 4-4h12" /><path d="M7 22l-3-3 3-3" /><path d="M20 13v2a4 4 0 0 1-4 4H4" /></svg>
+      </button>
+    {/if}
   </header>
 
-  {#if banner}
-    <div class="banner" role="status">{banner}</div>
-  {:else if waitingLong && mode === 'learn' && !paused}
-    <div class="banner hint" role="status">Play the glowing {session.pendingMidis().size > 1 ? 'keys' : 'key'} to continue</div>
+  {#if coach}
+    {#key coach.id}
+      <div class="coach" class:sticky={coach.sticky} role="status" in:fly={{ x: 30, duration: 380 }} out:fade={{ duration: 200 }}>
+        {coach.text}
+        {#if coach.sticky}<button onclick={() => (coach = null)}>OK</button>{/if}
+      </div>
+    {/key}
+  {/if}
+
+  {#if showMap && started}
+    <div class="map" transition:fade={{ duration: 300 }} aria-hidden="true">
+      <svg viewBox="0 0 {MAP_WHITES.length * 10} 60">
+        {#each MAP_WHITES as m, i}
+          <rect x={i * 10 + 0.5} y="0" width="9" height="60" rx="1.5" class="w" class:in={m >= prepared.lo && m <= prepared.hi} />
+        {/each}
+        {#each MAP_WHITES as m, i}
+          {#if [0, 2, 5, 7, 9].includes(m % 12) && m + 1 <= 108}
+            <rect x={i * 10 + 6.5} y="0" width="6" height="36" rx="1" class="b" class:in={m + 1 >= prepared.lo && m + 1 <= prepared.hi} />
+          {/if}
+        {/each}
+        <rect class="frame" x={whiteIndex(prepared.lo) * 10} y="0.75" width={(whiteIndex(prepared.hi) - whiteIndex(prepared.lo) + 1) * 10} height="58.5" rx="3" />
+        {#each MAP_WHITES as m, i}
+          {#if m % 12 === 0}<text x={i * 10 + 5} y="54">C{Math.floor(m / 12) - 1}</text>{/if}
+        {/each}
+      </svg>
+    </div>
+  {/if}
+
+  {#if preview && started}
+    <div class="previewpill" transition:fade>Preview only</div>
   {/if}
 
   {#if needsTapToListen}
-    <div class="overlay">
-      <div class="card">
-        <h2>Listen to your piano</h2>
+    <div class="overlay" transition:fade>
+      <div class="card glass">
+        <h2 class="serif">Listen to your piano</h2>
         <p>Stand your phone on the music rest, then tap Start. Keyfall will ask to use the microphone.</p>
-        <button class="btn-primary" onclick={beginListening}>Start listening</button>
-        <button class="btn-quiet" onclick={() => { needsTapToListen = false; input = 'touch'; start(); }}>Use screen keys instead</button>
+        <button class="btn-ember" onclick={beginListening}>Start listening</button>
+        <button
+          class="btn-glass"
+          onclick={() => {
+            needsTapToListen = false;
+            input = 'touch';
+            start();
+          }}>Use the screen keys instead</button
+        >
       </div>
     </div>
   {/if}
 
   {#if paused}
-    <div class="overlay">
-      <div class="card">
-        <h2>Paused</h2>
-        <button class="btn-primary" onclick={resume}>Resume</button>
+    <div class="overlay" transition:fade={{ duration: 180 }}>
+      <div class="card glass" in:fly={{ y: 20, duration: 320 }}>
+        <h2 class="serif">Paused</h2>
+        <p class="songname">{entry.title}</p>
+        <button class="btn-ember" onclick={resume}>Resume</button>
         <div class="row">
           <span class="label">Speed</span>
-          <button class="step" aria-label="Slower" onclick={() => setSpeed(speed - 0.1)}>−</button>
+          <button class="step" aria-label="Slower" onclick={() => setSpeed(speed - 0.05)}>−</button>
           <span class="value">{Math.round(speed * 100)}%</span>
-          <button class="step" aria-label="Faster" onclick={() => setSpeed(speed + 0.1)}>+</button>
+          <button class="step" aria-label="Faster" onclick={() => setSpeed(speed + 0.05)}>+</button>
         </div>
         <div class="row two">
-          <button class="btn-quiet" onclick={restart}>Restart</button>
-          <button class="btn-quiet" onclick={onexit}>Back to songs</button>
+          <button class="btn-glass" onclick={restart}>Restart</button>
+          <button class="btn-glass" onclick={onexit}>Leave</button>
         </div>
       </div>
     </div>
   {/if}
 
   {#if portrait && !rotateDismissed && !paused && !needsTapToListen}
-    <button class="rotate" onclick={() => (rotateDismissed = true)}>
+    <button class="rotate glass" onclick={() => (rotateDismissed = true)}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="7" y="2" width="10" height="20" rx="2.5" /></svg>
       Turn your phone sideways for bigger keys
       <span>Dismiss</span>
     </button>
@@ -510,7 +628,7 @@
     position: fixed;
     inset: 0;
     overflow: hidden;
-    background: var(--midnight);
+    background: #000;
     touch-action: none;
   }
   .probe {
@@ -525,138 +643,223 @@
     display: block;
     touch-action: none;
   }
+  /* glowing ember frame; the flare layer brightens on hits (opacity only, so it stays cheap) */
+  .edge {
+    position: absolute;
+    inset: 0;
+    border-radius: 54px;
+    pointer-events: none;
+    box-shadow:
+      inset 0 0 0 1.5px rgba(255, 130, 60, 0.55),
+      inset 0 0 22px 2px rgba(255, 100, 30, 0.35);
+  }
+  .edge.flare {
+    opacity: 0.15;
+    box-shadow:
+      inset 0 0 0 2px rgba(255, 170, 90, 0.95),
+      inset 0 0 40px 8px rgba(255, 110, 30, 0.75),
+      inset 0 0 120px 20px rgba(255, 70, 20, 0.25);
+    will-change: opacity;
+  }
   .hud {
     position: absolute;
-    top: calc(var(--sat) + 6px);
-    left: calc(var(--sal) + 8px);
-    right: calc(var(--sar) + 8px);
+    top: calc(var(--sat) + 8px);
+    left: calc(var(--sal) + 14px);
+    right: calc(var(--sar) + 14px);
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 12px;
   }
-  .track {
-    flex: 1;
-    min-width: 0;
-  }
-  .title-row {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    font-size: 14px;
-    line-height: 1.2;
-    white-space: nowrap;
-  }
-  .title {
-    font-weight: 800;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .meta {
-    color: var(--ivory-dim);
-    font-weight: 600;
-  }
-  .time {
-    margin-left: auto;
-    color: var(--ivory-dim);
-    font-variant-numeric: tabular-nums;
-    font-weight: 600;
-  }
-  .bar {
-    height: 28px;
-    display: flex;
-    align-items: center;
-    cursor: pointer;
-    touch-action: none;
-  }
-  .bar-track {
-    position: relative;
-    width: 100%;
-    height: 6px;
-    border-radius: 3px;
-    background: rgba(245, 239, 227, 0.14);
-  }
-  .bar-fill {
-    position: absolute;
-    inset: 0 auto 0 0;
-    border-radius: 3px;
-    background: var(--brass);
-  }
-  .loop-span {
-    position: absolute;
-    top: -4px;
-    bottom: -4px;
-    border-radius: 4px;
-    background: rgba(56, 189, 248, 0.35);
-    outline: 1px solid rgba(56, 189, 248, 0.8);
-  }
-  .icon-btn.on {
-    background: rgba(56, 189, 248, 0.3);
-    color: #bae6fd;
-  }
-  .speed {
-    min-width: 58px;
-    height: 48px;
-    border-radius: 14px;
-    background: rgba(35, 44, 94, 0.85);
-    font-weight: 750;
-    font-variant-numeric: tabular-nums;
-  }
-  .mic {
+  .orb {
     width: 48px;
     height: 48px;
+    flex: none;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: rgba(18, 14, 16, 0.85);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+    color: var(--ivory);
+    transition: transform 0.18s var(--spring);
+  }
+  .orb:active {
+    transform: scale(0.9);
+  }
+  .orb svg {
+    width: 24px;
+    height: 24px;
+  }
+  .orb.on {
+    color: var(--flame);
+    box-shadow: inset 0 0 0 1.5px var(--flame), 0 0 16px rgba(255, 106, 31, 0.4);
+  }
+  .bar {
+    position: relative;
+    flex: 1;
+    height: 40px;
+    border-radius: 999px;
+    background: rgba(18, 14, 16, 0.8);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+    touch-action: none;
+    cursor: pointer;
+  }
+  .ticks {
+    position: absolute;
+    inset: 0 22px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .ticks i {
+    width: 1.5px;
+    height: 12px;
+    border-radius: 1px;
+    background: rgba(255, 255, 255, 0.45);
+  }
+  .ticks i.big {
+    height: 18px;
+    background: rgba(255, 255, 255, 0.75);
+  }
+  .thumb {
+    position: absolute;
+    top: 9px;
+    width: 34px;
+    height: 22px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, #ff9a52, #ec4f16);
+    box-shadow: 0 0 14px rgba(255, 106, 31, 0.8), inset 0 1px 0 rgba(255, 230, 200, 0.6);
+  }
+  .loopspan {
+    position: absolute;
+    top: 5px;
+    bottom: 5px;
+    border-radius: 999px;
+    background: rgba(110, 168, 255, 0.28);
+    box-shadow: inset 0 0 0 1px rgba(110, 168, 255, 0.8);
+  }
+  .mic {
+    width: 44px;
+    height: 44px;
+    flex: none;
     display: grid;
     place-items: center;
     border-radius: 50%;
     color: var(--ivory);
-    box-shadow: 0 0 0 calc(2px + var(--lvl) * 10px) rgba(231, 182, 90, calc(0.15 + var(--lvl) * 0.5));
+    box-shadow: 0 0 0 calc(2px + var(--lvl) * 10px) rgba(255, 122, 47, calc(0.15 + var(--lvl) * 0.5));
     transition: box-shadow 0.08s linear;
   }
   .mic svg {
     width: 22px;
     height: 22px;
   }
-  .banner {
+  .coach {
     position: absolute;
-    left: 50%;
-    top: calc(var(--sat) + 72px);
-    transform: translateX(-50%);
-    max-width: min(560px, 86vw);
-    padding: 10px 18px;
-    border-radius: 14px;
-    background: rgba(24, 32, 74, 0.94);
-    font-weight: 650;
-    font-size: 15px;
-    text-align: center;
+    top: calc(var(--sat) + 66px);
+    right: calc(var(--sar) + 16px);
+    max-width: min(330px, 70vw);
+    padding: 16px 20px;
+    border-radius: 24px;
+    background: rgba(28, 26, 30, 0.92);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08), 0 14px 40px rgba(0, 0, 0, 0.5);
+    font-size: 18px;
+    line-height: 1.35;
     pointer-events: none;
   }
-  .banner.hint {
-    background: rgba(231, 182, 90, 0.95);
-    color: #1d1606;
+  .coach.sticky {
+    pointer-events: auto;
+    display: grid;
+    gap: 10px;
+  }
+  .coach button {
+    justify-self: end;
+    min-height: 40px;
+    padding: 0 18px;
+    border-radius: 999px;
+    background: var(--ember);
+    font-weight: 600;
+  }
+  .map {
+    position: absolute;
+    left: calc(var(--sal) + 50px);
+    top: 46%;
+    transform: translateY(-50%);
+    width: min(400px, 42vw);
+    padding: 7px;
+    border-radius: 12px;
+    background: rgba(40, 38, 44, 0.92);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    pointer-events: none;
+  }
+  .map svg {
+    display: block;
+    width: 100%;
+  }
+  .map .w {
+    fill: #6d6a72;
+  }
+  .map .w.in {
+    fill: #fbf8fc;
+  }
+  .map .b {
+    fill: #2a282d;
+  }
+  .map .b.in {
+    fill: #111;
+  }
+  .map .frame {
+    fill: none;
+    stroke: var(--ember);
+    stroke-width: 1.6;
+  }
+  .map text {
+    font-size: 6px;
+    text-anchor: middle;
+    fill: #444;
+    font-family: var(--sans);
+  }
+  .previewpill {
+    position: absolute;
+    left: 50%;
+    bottom: calc(var(--sab) + 22px);
+    transform: translateX(-50%);
+    padding: 12px 34px;
+    border-radius: 999px;
+    background: rgba(30, 26, 28, 0.9);
+    box-shadow: inset 0 0 0 2px var(--ember), 0 0 24px rgba(255, 106, 31, 0.55);
+    font-size: 22px;
+    pointer-events: none;
+    animation: glowPulse 2s ease-in-out infinite;
+  }
+  @keyframes glowPulse {
+    50% {
+      box-shadow: inset 0 0 0 2px #ff9a52, 0 0 36px rgba(255, 106, 31, 0.8);
+    }
   }
   .overlay {
     position: absolute;
     inset: 0;
     display: grid;
     place-items: center;
-    background: rgba(8, 11, 28, 0.72);
+    background: rgba(4, 2, 4, 0.66);
     padding: 16px;
   }
   .card {
-    width: min(380px, 100%);
+    width: min(390px, 100%);
     display: grid;
     gap: 14px;
-    padding: 24px;
-    border-radius: 24px;
-    background: var(--midnight-2);
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+    padding: 26px;
+    border-radius: 30px;
+    background: rgba(26, 20, 22, 0.94);
   }
   .card h2 {
-    font-size: 24px;
-    font-weight: 800;
+    font-size: 40px;
   }
   .card p {
-    color: var(--ivory-dim);
+    color: var(--muted);
     line-height: 1.45;
+  }
+  .songname {
+    margin-top: -8px;
   }
   .row {
     display: flex;
@@ -668,37 +871,53 @@
   }
   .label {
     flex: 1;
-    font-weight: 650;
+    font-size: 17px;
   }
   .value {
-    min-width: 56px;
+    min-width: 60px;
     text-align: center;
-    font-weight: 800;
+    font-weight: 600;
     font-variant-numeric: tabular-nums;
   }
   .step {
     width: 48px;
     height: 48px;
-    border-radius: 14px;
-    background: var(--midnight-3);
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.06);
+    box-shadow: inset 0 0 0 1px var(--hair-strong);
     font-size: 24px;
-    font-weight: 700;
   }
   .rotate {
     position: absolute;
     left: 50%;
-    top: 42%;
+    top: 40%;
     transform: translateX(-50%);
     display: grid;
-    gap: 6px;
-    padding: 16px 22px;
-    border-radius: 18px;
-    background: rgba(24, 32, 74, 0.95);
-    font-weight: 700;
+    justify-items: center;
+    gap: 8px;
+    padding: 20px 24px;
+    border-radius: 26px;
+    font-size: 17px;
     text-align: center;
+    background: rgba(26, 20, 22, 0.94);
+  }
+  .rotate svg {
+    width: 36px;
+    height: 36px;
+    animation: tilt 2.4s ease-in-out infinite;
+  }
+  @keyframes tilt {
+    0%,
+    30% {
+      transform: rotate(0deg);
+    }
+    60%,
+    100% {
+      transform: rotate(90deg);
+    }
   }
   .rotate span {
-    color: var(--brass);
-    font-size: 14px;
+    color: var(--flame);
+    font-size: 15px;
   }
 </style>

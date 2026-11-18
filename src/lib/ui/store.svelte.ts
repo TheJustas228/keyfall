@@ -6,7 +6,7 @@ import { getSettings, saveSettings, type Settings, type SongConfig } from '../st
 import { getImport, listImports, type ImportMeta } from '../storage/imports';
 import type { Mode } from '../game/session';
 
-export type Screen = 'library' | 'player' | 'results' | 'free' | 'settings';
+export type Screen = 'home' | 'library' | 'song' | 'player' | 'results' | 'free' | 'settings';
 
 export interface FinishStats {
   stars: 0 | 1 | 2 | 3;
@@ -16,6 +16,7 @@ export interface FinishStats {
   miss: number;
   wrong: number;
   bestCombo: number;
+  timeline: (number | null)[];
 }
 
 export interface ResultData {
@@ -30,12 +31,16 @@ export interface ResultData {
   miss: number;
   wrong: number;
   bestCombo: number;
+  timeline: (number | null)[];
   newBest: boolean;
+  streak: number;
 }
 
 export const app = $state({
-  screen: 'library' as Screen,
-  sheet: null as CatalogEntry | null,
+  screen: 'home' as Screen,
+  back: 'home' as Screen,
+  song: null as CatalogEntry | null,
+  libraryQuery: '',
   importOpen: false,
   importTitle: '',
   playing: null as { entry: CatalogEntry; song: Song; config: SongConfig; runId: number } | null,
@@ -92,6 +97,15 @@ export function forgetSong(id: string) {
 let runCounter = 0;
 export function startPlaying(entry: CatalogEntry, song: Song, config: SongConfig) {
   app.playing = { entry, song, config, runId: ++runCounter };
-  app.sheet = null;
   app.screen = 'player';
+}
+
+export function go(screen: Screen) {
+  app.screen = screen;
+}
+
+export function openSong(entry: CatalogEntry, from: Screen = app.screen) {
+  app.song = entry;
+  app.back = from === 'song' ? app.back : from;
+  app.screen = 'song';
 }

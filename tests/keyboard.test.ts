@@ -81,3 +81,16 @@ describe('KeyInput', () => {
     expect(new KeyInput().move(9, 60)).toEqual({});
   });
 });
+
+import { unproject } from '../src/lib/game/keyboard';
+
+describe('unproject (perspective keyboard)', () => {
+  test('at the bottom edge nothing changes', () => {
+    expect(unproject(120, 1, 700, 0.955)).toBeCloseTo(120);
+  });
+  test('at the top edge a touch near the side maps outward to the key under the finger', () => {
+    // top edge is narrower: key x=0 is drawn at cx - cx*0.955 = 15.75
+    expect(unproject(15.75, 0, 700, 0.955)).toBeCloseTo(0);
+    expect(unproject(350, 0, 700, 0.955)).toBeCloseTo(350); // centre unchanged
+  });
+});

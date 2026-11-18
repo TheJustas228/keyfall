@@ -25,8 +25,9 @@
     display: flex;
     gap: 4px;
     padding: 4px;
-    border-radius: 16px;
-    background: rgba(8, 11, 28, 0.55);
+    border-radius: 999px;
+    background: var(--glass);
+    box-shadow: inset 0 0 0 1px var(--hair);
   }
   .seg.disabled {
     opacity: 0.4;
@@ -34,14 +35,15 @@
   button {
     flex: 1;
     min-height: 44px;
-    border-radius: 12px;
-    font-weight: 700;
+    border-radius: 999px;
+    font-weight: 500;
     font-size: 16px;
-    color: var(--ivory-dim);
+    color: var(--muted);
     transition: background 0.15s ease, color 0.15s ease;
   }
   button.active {
-    background: var(--ivory);
-    color: #141a3a;
+    background: rgba(255, 255, 255, 0.08);
+    box-shadow: inset 0 0 0 1px var(--hair-strong);
+    color: var(--ivory);
   }
 </style>

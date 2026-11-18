@@ -19,7 +19,10 @@ export interface Frame {
   stageTop: number;
   required: Note[];
   auto: Note[];
+  /** draw auto notes as hollow outlines ("I play the empty ones") */
   dimAuto: boolean;
+  /** preview: every note is shown faded */
+  preview?: boolean;
   judgment: (n: Note) => Judgment | undefined;
   pressed: Map<number, PressKind>;
   pending: Set<number>;
@@ -30,16 +33,18 @@ export interface Frame {
   rising?: Rising[];
 }
 
-const COLORS = {
-  R: { main: '#38bdf8', deep: '#2563eb', light: '#9ddcfb', key: '#7dd3fc', keyDeep: '#1d6fd8' },
-  L: { main: '#fb923c', deep: '#ea580c', light: '#fdc58f', key: '#fdba74', keyDeep: '#c2410c' },
+/** Perspective: the top edge of the keyboard is this much narrower than the bottom. */
+export const PERSPECTIVE = 0.955;
+
+const HAND = {
+  R: { top: '#ffb27a', mid: '#ff7a2f', bot: '#e8501a', glow: '255,122,47', text: '#3b1200', key: ['#ffc59a', '#ff8a45'], keyBlack: ['#ff8a45', '#c2410c'] },
+  L: { top: '#a9cbff', mid: '#6ea8ff', bot: '#3f74e0', glow: '110,168,255', text: '#08173d', key: ['#c4dbff', '#7fb2ff'], keyBlack: ['#7fb2ff', '#2f5fc4'] },
 };
-const IVORY = '#f5efe3';
-const BRASS = '#e7b65a';
 const LETTERS_SHARP = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B'];
 const LETTERS_FLAT = ['C', 'D♭', 'D', 'E♭', 'E', 'F', 'G♭', 'G', 'A♭', 'A', 'B♭', 'B'];
 const SOLFEGE_SHARP = ['Do', 'Do♯', 'Re', 'Re♯', 'Mi', 'Fa', 'Fa♯', 'Sol', 'Sol♯', 'La', 'La♯', 'Si'];
 const SOLFEGE_FLAT = ['Do', 'Re♭', 'Re', 'Mi♭', 'Mi', 'Fa', 'Sol♭', 'Sol', 'La♭', 'La', 'Si♭', 'Si'];
+const FONT = '-apple-system, "SF Pro Text", system-ui, sans-serif';
 
 export function noteLabel(midi: number, style: LabelStyle, flats = false): string {
   if (style === 'off') return '';
@@ -53,6 +58,8 @@ interface Spark {
   vx: number;
   vy: number;
   life: number;
+  max: number;
+  r: number;
   color: string;
 }
 interface Pop {
@@ -90,22 +97,32 @@ export function createRenderer(canvas: HTMLCanvasElement) {
     for (const k of keys) keyIndex.set(k.midi, k);
   }
 
+  /** x of a key edge at vertical fraction `frac` of the keyboard (0 = top/hit line, 1 = bottom) */
+  const px = (f: Frame, x: number, frac: number) => {
+    const cx = f.kb.w / 2;
+    const s = PERSPECTIVE + (1 - PERSPECTIVE) * frac;
+    return f.kb.x + cx + (x - cx) * s;
+  };
+  /** lane (top of key) position for falling notes */
+  const laneX = (f: Frame, x: number) => px(f, x, 0);
+
   function burst(midi: number, f: Frame, hand: 'R' | 'L' | 'brass') {
     const k = keyIndex.get(midi);
     if (!k) return;
-    const x = f.kb.x + k.x + k.w / 2;
-    const color = hand === 'brass' ? BRASS : COLORS[hand].light;
-    for (let i = 0; i < 14; i++) {
-      const a = -Math.PI / 2 + (Math.random() - 0.5) * 1.6;
-      const sp = 90 + Math.random() * 170;
-      sparks.push({ x, y: f.kb.y - 2, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 0.5 + Math.random() * 0.3, color });
+    const x = laneX(f, k.x + k.w / 2);
+    const color = hand === 'L' ? '#a9cbff' : '#ffb06a';
+    for (let i = 0; i < 18; i++) {
+      const a = -Math.PI / 2 + (Math.random() - 0.5) * 1.3;
+      const sp = 70 + Math.random() * 190;
+      sparks.push({ x: x + (Math.random() - 0.5) * k.w * 0.6, y: f.kb.y - 3, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 0, max: 0.45 + Math.random() * 0.5, r: 1 + Math.random() * 1.8, color });
     }
+    if (sparks.length > 400) sparks.splice(0, sparks.length - 400);
   }
 
   function pop(text: string, f: Frame, color: string, midi?: number) {
     const k = midi !== undefined ? keyIndex.get(midi) : undefined;
-    const x = k ? f.kb.x + k.x + k.w / 2 : f.kb.x + f.kb.w / 2;
-    pops.push({ text, x, y: f.kb.y - 40, t0: f.now, color });
+    const x = k ? laneX(f, k.x + k.w / 2) : f.kb.x + f.kb.w / 2;
+    pops.push({ text, x, y: f.kb.y - 46, t0: f.now, color });
     if (pops.length > 6) pops.shift();
   }
 
@@ -114,30 +131,26 @@ export function createRenderer(canvas: HTMLCanvasElement) {
     pops = [];
   }
 
-  function roundRect(x: number, y: number, w: number, h: number, r: number) {
-    const rr = Math.min(r, w / 2, h / 2);
+  function rr(x: number, y: number, w: number, h: number, r: number) {
     ctx.beginPath();
-    ctx.roundRect(x, y, w, h, rr);
+    ctx.roundRect(x, y, w, h, Math.max(0, Math.min(r, w / 2, h / 2)));
   }
 
   function drawStage(f: Frame) {
     const { kb } = f;
-    // background with a soft glow rising from the keys
-    ctx.fillStyle = '#101632';
+    ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, W, H);
-    const g = ctx.createLinearGradient(0, f.stageTop, 0, kb.y);
-    g.addColorStop(0, 'rgba(16,22,50,0)');
-    g.addColorStop(1, 'rgba(60,72,140,0.35)');
+    const g = ctx.createLinearGradient(0, kb.y - 160, 0, kb.y);
+    g.addColorStop(0, 'rgba(255,90,30,0)');
+    g.addColorStop(1, 'rgba(255,90,30,0.07)');
     ctx.fillStyle = g;
-    ctx.fillRect(0, f.stageTop, W, kb.y - f.stageTop);
-
-    // lane lines at every C (stronger) and F
+    ctx.fillRect(0, kb.y - 160, W, 160);
     for (const k of f.keys) {
       if (k.black) continue;
       const pc = k.midi % 12;
       if (pc !== 0 && pc !== 5) continue;
-      ctx.fillStyle = pc === 0 ? 'rgba(245,239,227,0.10)' : 'rgba(245,239,227,0.045)';
-      ctx.fillRect(Math.round(kb.x + k.x), f.stageTop, 1, kb.y - f.stageTop);
+      ctx.fillStyle = pc === 0 ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.07)';
+      ctx.fillRect(Math.round(laneX(f, k.x)), f.stageTop, pc === 0 ? 1.5 : 1, kb.y - f.stageTop);
     }
   }
 
@@ -146,8 +159,7 @@ export function createRenderer(canvas: HTMLCanvasElement) {
     const span = kb.y - f.stageTop;
     const pps = span / f.window;
     const end = f.clock + f.window;
-    const dim = kind === 'auto' && f.dimAuto;
-    ctx.font = '700 11px ui-rounded, -apple-system, system-ui, sans-serif';
+    const hollow = (kind === 'auto' && f.dimAuto) || f.preview;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
     for (const n of notes) {
@@ -156,167 +168,249 @@ export function createRenderer(canvas: HTMLCanvasElement) {
       const k = keyIndex.get(n.midi);
       if (!k) continue;
       const bottom = kb.y - (n.start - f.clock) * pps;
-      const top = bottom - Math.max(n.dur * pps, 8);
-      const inset = k.black ? 1 : Math.max(1.5, k.w * 0.08);
-      const x = kb.x + k.x + inset;
-      const w = k.w - inset * 2;
-      const c = COLORS[n.hand];
+      const top = bottom - Math.max(n.dur * pps, 12);
+      const inset = k.black ? 0.5 : Math.max(1.5, k.w * 0.09);
+      const x0 = laneX(f, k.x + inset);
+      const x1 = laneX(f, k.x + k.w - inset);
+      const w = x1 - x0;
+      const h = bottom - top;
+      const c = HAND[n.hand];
       const j = kind === 'req' ? f.judgment(n) : undefined;
       const active = n.start <= f.clock && n.start + n.dur > f.clock;
-      ctx.globalAlpha = dim ? 0.32 : j === 'miss' ? 0.35 : 1;
-      let fill = k.black ? c.deep : c.main;
-      if (j === 'miss') fill = '#64708f';
-      else if ((j === 'perfect' || j === 'good') && active) fill = c.light;
-      roundRect(x, top, w, bottom - top, Math.min(7, w / 3));
-      ctx.fillStyle = fill;
-      ctx.fill();
-      if (!dim) {
-        // pending notes in learn mode pulse with a brass ring
-        if (kind === 'req' && f.pending.has(n.midi) && Math.abs(n.start - f.clock) < 0.3) {
-          ctx.lineWidth = 2.5;
-          ctx.strokeStyle = `rgba(231,182,90,${0.6 + 0.4 * Math.sin(f.now * 8)})`;
-          ctx.stroke();
-        } else {
-          ctx.lineWidth = 1;
-          ctx.strokeStyle = 'rgba(255,255,255,0.28)';
-          ctx.stroke();
+      const radius = Math.min(8, w * 0.32);
+
+      if (hollow) {
+        ctx.globalAlpha = f.preview ? 0.55 : 0.85;
+        rr(x0 + 0.75, top + 0.75, w - 1.5, h - 1.5, radius);
+        ctx.fillStyle = `rgba(${c.glow},${active ? 0.28 : 0.08})`;
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = `rgba(${c.glow},${f.preview ? 0.5 : 0.75})`;
+        ctx.stroke();
+      } else {
+        const missed = j === 'miss';
+        if (active && (j === 'perfect' || j === 'good')) {
+          ctx.globalAlpha = 0.5;
+          rr(x0 - 4, top - 4, w + 8, h + 8, radius + 4);
+          ctx.fillStyle = `rgba(${c.glow},0.35)`;
+          ctx.fill();
         }
-        const label = noteLabel(n.midi, f.labels, f.flats);
-        if (label && bottom - top >= 18 && w >= 13 && bottom <= kb.y + 3) {
-          ctx.fillStyle = 'rgba(12,16,38,0.82)';
-          ctx.font = `700 ${Math.min(12, Math.max(9, w * 0.45))}px ui-rounded, -apple-system, system-ui, sans-serif`;
-          ctx.fillText(label, x + w / 2, bottom - 5);
+        ctx.globalAlpha = missed ? 0.3 : 1;
+        const g = ctx.createLinearGradient(0, top, 0, bottom);
+        g.addColorStop(0, c.top);
+        g.addColorStop(0.35, c.mid);
+        g.addColorStop(1, c.bot);
+        rr(x0, top, w, h, radius);
+        ctx.fillStyle = missed ? '#5a5560' : g;
+        ctx.fill();
+        ctx.globalAlpha = missed ? 0.1 : 0.32;
+        rr(x0 + 2, top + 2, w - 4, Math.min(h * 0.4, 18), Math.max(0, radius - 2));
+        ctx.fillStyle = '#fff';
+        ctx.fill();
+        if (kind === 'req' && f.pending.has(n.midi) && Math.abs(n.start - f.clock) < 0.3) {
+          ctx.globalAlpha = 0.6 + 0.4 * Math.sin(f.now * 7);
+          rr(x0 - 3, top - 3, w + 6, h + 6, radius + 3);
+          ctx.lineWidth = 2.5;
+          ctx.strokeStyle = '#fff3e6';
+          ctx.stroke();
         }
       }
+      ctx.globalAlpha = 1;
+      const label = noteLabel(n.midi, f.labels, f.flats);
+      if (label && h >= 18 && w >= 13 && bottom <= kb.y + 3) {
+        const size = Math.min(17, Math.max(10, w * 0.55));
+        ctx.font = `700 ${size}px ${FONT}`;
+        ctx.fillStyle = hollow ? `rgba(${c.glow},${f.preview ? 0.7 : 0.95})` : c.text;
+        ctx.fillText(label, (x0 + x1) / 2, bottom - Math.max(5, (Math.min(h, 34) - size) / 2));
+      }
     }
-    ctx.globalAlpha = 1;
   }
 
   function drawRising(f: Frame) {
     if (!f.rising) return;
     const { kb } = f;
-    const speed = 140; // px per second
+    const speed = 150;
     for (const r of f.rising) {
       const k = keyIndex.get(r.midi);
       if (!k) continue;
       const bottom = r.t1 === null ? kb.y : kb.y - (f.now - r.t1) * speed;
       const top = Math.min(kb.y - (f.now - r.t0) * speed, bottom - 14);
       if (bottom < f.stageTop) continue;
-      const inset = k.black ? 1 : Math.max(1.5, k.w * 0.08);
-      const hand = r.midi >= 60 ? COLORS.R : COLORS.L;
-      roundRect(kb.x + k.x + inset, Math.max(top, f.stageTop), k.w - inset * 2, bottom - Math.max(top, f.stageTop), 6);
-      ctx.globalAlpha = Math.max(0.15, Math.min(1, (bottom - f.stageTop) / 120));
-      ctx.fillStyle = k.black ? hand.deep : hand.main;
+      const c = r.midi >= 60 ? HAND.R : HAND.L;
+      const inset = k.black ? 0.5 : Math.max(1.5, k.w * 0.09);
+      const x0 = laneX(f, k.x + inset);
+      const x1 = laneX(f, k.x + k.w - inset);
+      const t = Math.max(top, f.stageTop);
+      ctx.globalAlpha = Math.max(0.1, Math.min(1, (bottom - f.stageTop) / 140));
+      const g = ctx.createLinearGradient(0, t, 0, bottom);
+      g.addColorStop(0, c.top);
+      g.addColorStop(1, c.bot);
+      rr(x0, t, x1 - x0, bottom - t, 7);
+      ctx.fillStyle = g;
       ctx.fill();
     }
     ctx.globalAlpha = 1;
   }
 
-  function keyFill(k: Key, kind: PressKind | undefined, f: Frame): string {
-    if (kind === 'wrong') return k.black ? '#be123c' : '#fda4af';
-    if (kind === 'free') return k.black ? '#8a6a2a' : '#ecd3a0';
-    if (kind === 'R' || kind === 'autoR') return k.black ? COLORS.R.keyDeep : COLORS.R.key;
-    if (kind === 'L' || kind === 'autoL') return k.black ? COLORS.L.keyDeep : COLORS.L.key;
-    if (f.pending.has(k.midi)) {
-      const p = 0.5 + 0.5 * Math.sin(f.now * 7);
-      return k.black ? `rgb(${150 + 81 * p},${105 + 77 * p},${40 + 50 * p})` : `rgb(245,${228 - 20 * p},${190 - 60 * p})`;
-    }
-    return k.black ? '#1c1b22' : IVORY;
+  function keyPath(f: Frame, x0: number, x1: number, fTop: number, fBot: number) {
+    const { kb } = f;
+    const yT = kb.y + kb.h * fTop;
+    const yB = kb.y + kb.h * fBot;
+    ctx.beginPath();
+    ctx.moveTo(px(f, x0, fTop), yT);
+    ctx.lineTo(px(f, x1, fTop), yT);
+    ctx.lineTo(px(f, x1, fBot), yB);
+    ctx.lineTo(px(f, x0, fBot), yB);
+    ctx.closePath();
+  }
+
+  function pressedColors(kind: PressKind | undefined, black: boolean): [string, string] | null {
+    if (!kind) return null;
+    if (kind === 'wrong') return black ? ['#ff6b7a', '#9f1239'] : ['#ffd0d6', '#ff7d8c'];
+    if (kind === 'free') return black ? ['#ffb06a', '#b8430f'] : ['#ffe2c6', '#ffb27a'];
+    const h = kind === 'R' || kind === 'autoR' ? HAND.R : HAND.L;
+    return black ? (h.keyBlack as [string, string]) : (h.key as [string, string]);
   }
 
   function drawKeyboard(f: Frame) {
     const { kb } = f;
-    // felt strip and key bed
-    ctx.fillStyle = '#05060f';
+    const LIP = 0.075;
+    ctx.fillStyle = '#060406';
     ctx.fillRect(0, kb.y, W, H - kb.y);
-    ctx.fillStyle = '#7f1d2d';
-    ctx.fillRect(kb.x, kb.y, kb.w, 3);
-    const top = kb.y + 3;
-    const h = kb.h - 3;
 
-    // light beams above pressed keys
     for (const [midi, kind] of f.pressed) {
       const k = keyIndex.get(midi);
       if (!k || kind === 'wrong') continue;
-      const color = kind === 'R' || kind === 'autoR' ? '56,189,248' : kind === 'L' || kind === 'autoL' ? '251,146,60' : '231,182,90';
-      const g = ctx.createLinearGradient(0, kb.y - 90, 0, kb.y);
-      g.addColorStop(0, `rgba(${color},0)`);
-      g.addColorStop(1, `rgba(${color},${kind.startsWith('auto') ? 0.18 : 0.38})`);
+      const rgb = kind === 'R' || kind === 'autoR' ? HAND.R.glow : kind === 'L' || kind === 'autoL' ? HAND.L.glow : '255,176,106';
+      const x0 = laneX(f, k.x);
+      const x1 = laneX(f, k.x + k.w);
+      const g = ctx.createLinearGradient(0, kb.y - 130, 0, kb.y);
+      g.addColorStop(0, `rgba(${rgb},0)`);
+      g.addColorStop(1, `rgba(${rgb},${kind.startsWith('auto') ? 0.16 : 0.42})`);
       ctx.fillStyle = g;
-      ctx.fillRect(kb.x + k.x, kb.y - 90, k.w, 90);
+      ctx.fillRect(x0, kb.y - 130, x1 - x0, 130);
     }
 
     for (const k of f.keys) {
       if (k.black) continue;
       const kind = f.pressed.get(k.midi);
-      const x = kb.x + k.x;
-      roundRect(x + 0.75, top, k.w - 1.5, h - 1, 5);
-      ctx.fillStyle = keyFill(k, kind, f);
+      const pc = pressedColors(kind, false);
+      const down = pc ? 0.012 : 0;
+      keyPath(f, k.x + 0.6, k.x + k.w - 0.6, down, 1 - LIP + down);
+      const g = ctx.createLinearGradient(0, kb.y, 0, kb.y + kb.h);
+      if (pc) {
+        g.addColorStop(0, pc[0]);
+        g.addColorStop(1, pc[1]);
+      } else if (f.pending.has(k.midi)) {
+        const p = 0.5 + 0.5 * Math.sin(f.now * 7);
+        g.addColorStop(0, '#fff8f0');
+        g.addColorStop(1, `rgb(255,${Math.round(214 - 50 * p)},${Math.round(170 - 90 * p)})`);
+      } else {
+        g.addColorStop(0, '#ffffff');
+        g.addColorStop(0.65, '#f5f2f6');
+        g.addColorStop(1, '#e6e1e8');
+      }
+      ctx.fillStyle = g;
       ctx.fill();
-      if (f.keyLabels) {
-        const pc = k.midi % 12;
-        const label = f.labels === 'off' ? (pc === 0 ? 'C' : '') : noteLabel(k.midi, f.labels, f.flats);
-        if (label && k.w >= 14) {
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'alphabetic';
-          ctx.fillStyle = pc === 0 ? '#4b4536' : '#9a917e';
-          ctx.font = `${pc === 0 ? 800 : 600} ${Math.min(13, k.w * 0.42)}px ui-rounded, -apple-system, system-ui, sans-serif`;
-          ctx.fillText(pc === 0 ? label + (Math.floor(k.midi / 12) - 1) : label, x + k.w / 2, top + h - 8);
-        }
+      ctx.strokeStyle = 'rgba(40,30,40,0.35)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      keyPath(f, k.x + 0.6, k.x + k.w - 0.6, 1 - LIP + down, 1);
+      const lg = ctx.createLinearGradient(0, kb.y + kb.h * (1 - LIP), 0, kb.y + kb.h);
+      lg.addColorStop(0, pc ? pc[1] : '#d8d2db');
+      lg.addColorStop(1, pc ? pc[1] : '#a9a1ad');
+      ctx.fillStyle = lg;
+      ctx.fill();
+      if (f.keyLabels && k.midi % 12 === 0 && k.w >= 14) {
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillStyle = '#2b2530';
+        ctx.font = `600 ${Math.min(17, k.w * 0.5)}px ${FONT}`;
+        const cx = (px(f, k.x, 0.9) + px(f, k.x + k.w, 0.9)) / 2;
+        ctx.fillText('C' + (Math.floor(k.midi / 12) - 1), cx, kb.y + kb.h * (1 - LIP) - 8);
       }
     }
-    const bh = h * BLACK_HEIGHT;
+
     for (const k of f.keys) {
       if (!k.black) continue;
       const kind = f.pressed.get(k.midi);
-      const x = kb.x + k.x;
-      roundRect(x, top - 1, k.w, bh, 4);
-      ctx.fillStyle = keyFill(k, kind, f);
+      const pc = pressedColors(kind, true);
+      const bh = BLACK_HEIGHT;
+      const bevel = bh * 0.16;
+      ctx.fillStyle = 'rgba(0,0,0,0.22)';
+      keyPath(f, k.x + 1.5, k.x + k.w + 3, 0, bh + 0.03);
       ctx.fill();
-      if (!kind) {
-        ctx.fillStyle = 'rgba(255,255,255,0.10)';
-        ctx.fillRect(x + k.w * 0.18, top + 2, k.w * 0.64, bh * 0.55);
+      keyPath(f, k.x, k.x + k.w, 0, bh - bevel);
+      const g = ctx.createLinearGradient(0, kb.y, 0, kb.y + kb.h * bh);
+      if (pc) {
+        g.addColorStop(0, pc[0]);
+        g.addColorStop(1, pc[1]);
+      } else if (f.pending.has(k.midi)) {
+        const p = 0.5 + 0.5 * Math.sin(f.now * 7);
+        g.addColorStop(0, `rgb(255,${Math.round(150 + 50 * p)},${Math.round(70 + 40 * p)})`);
+        g.addColorStop(1, `rgb(${Math.round(170 + 40 * p)},60,14)`);
+      } else {
+        g.addColorStop(0, '#34333a');
+        g.addColorStop(0.5, '#18171c');
+        g.addColorStop(1, '#0b0a0e');
       }
-      if (f.pending.has(k.midi)) {
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = BRASS;
-        roundRect(x, top - 1, k.w, bh, 4);
-        ctx.stroke();
+      ctx.fillStyle = g;
+      ctx.fill();
+      keyPath(f, k.x + k.w * 0.06, k.x + k.w * 0.94, bh - bevel, bh);
+      const bg = ctx.createLinearGradient(0, kb.y + kb.h * (bh - bevel), 0, kb.y + kb.h * bh);
+      bg.addColorStop(0, pc ? pc[1] : '#5d5b64');
+      bg.addColorStop(1, pc ? pc[1] : '#1b1a20');
+      ctx.fillStyle = bg;
+      ctx.fill();
+      if (!pc) {
+        keyPath(f, k.x + k.w * 0.16, k.x + k.w * 0.3, 0.02, bh - bevel - 0.04);
+        ctx.fillStyle = 'rgba(255,255,255,0.12)';
+        ctx.fill();
       }
     }
-    // hit line
-    const g = ctx.createLinearGradient(0, kb.y - 6, 0, kb.y);
-    g.addColorStop(0, 'rgba(231,182,90,0)');
-    g.addColorStop(1, 'rgba(231,182,90,0.55)');
-    ctx.fillStyle = g;
-    ctx.fillRect(kb.x, kb.y - 6, kb.w, 6);
+
+    ctx.fillStyle = '#7a0d1c';
+    ctx.fillRect(px(f, 0, 0), kb.y - 1, px(f, kb.w, 0) - px(f, 0, 0), 2.5);
+    const hg = ctx.createLinearGradient(0, kb.y - 14, 0, kb.y);
+    hg.addColorStop(0, 'rgba(255,240,230,0)');
+    hg.addColorStop(1, 'rgba(255,240,230,0.55)');
+    ctx.fillStyle = hg;
+    ctx.fillRect(0, kb.y - 14, W, 14);
+    ctx.fillStyle = 'rgba(255,248,240,0.9)';
+    ctx.fillRect(0, kb.y - 2.5, W, 1.5);
   }
 
   function drawEffects(f: Frame) {
     const dt = Math.min(0.05, Math.max(0, f.now - lastNow));
     lastNow = f.now;
     ctx.globalCompositeOperation = 'lighter';
-    sparks = sparks.filter((s) => (s.life -= dt) > 0);
+    sparks = sparks.filter((s) => (s.life += dt) < s.max);
     for (const s of sparks) {
       s.x += s.vx * dt;
       s.y += s.vy * dt;
-      s.vy += 380 * dt;
-      ctx.globalAlpha = Math.min(1, s.life * 2);
+      s.vx *= 1 - 1.8 * dt;
+      s.vy = s.vy * (1 - 1.2 * dt) - 40 * dt;
+      const a = 1 - s.life / s.max;
+      ctx.globalAlpha = a;
       ctx.fillStyle = s.color;
       ctx.beginPath();
-      ctx.arc(s.x, s.y, 2.2, 0, Math.PI * 2);
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = a * 0.2;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r * 3.5, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.globalCompositeOperation = 'source-over';
-    pops = pops.filter((p) => f.now - p.t0 < 0.7);
+    pops = pops.filter((p) => f.now - p.t0 < 0.75);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     for (const p of pops) {
-      const a = (f.now - p.t0) / 0.7;
+      const a = (f.now - p.t0) / 0.75;
       ctx.globalAlpha = 1 - a * a;
       ctx.fillStyle = p.color;
-      ctx.font = '800 18px ui-rounded, -apple-system, system-ui, sans-serif';
-      ctx.fillText(p.text, p.x, p.y - a * 34);
+      ctx.font = `700 ${20 + (1 - a) * 4}px ${FONT}`;
+      ctx.fillText(p.text, p.x, p.y - a * 38);
     }
     ctx.globalAlpha = 1;
   }

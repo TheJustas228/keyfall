@@ -42,7 +42,7 @@
 
 <div class="scrim" transition:fade={{ duration: 160 }} onclick={onclose} role="presentation"></div>
 <div class="sheet" role="dialog" aria-modal="true" aria-label="Import a MIDI file" transition:fly={{ y: 500, duration: 240, opacity: 1 }}>
-  <button class="icon-btn close" aria-label="Close" onclick={onclose}>
+  <button class="orb-btn close" aria-label="Close" onclick={onclose}>
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
   </button>
   <h2>{isRiver ? 'Add River Flows in You' : 'Import a MIDI file'}</h2>
@@ -61,7 +61,7 @@
 
   <label class="file">
     <input type="file" onchange={pick} />
-    <span class="btn-quiet">{file ? 'Choose a different file' : 'Choose MIDI file'}</span>
+    <span class="btn-glass">{file ? 'Choose a different file' : 'Choose MIDI file'}</span>
     <span class="fname">{file ? file.name : 'No file chosen'}</span>
   </label>
 
@@ -71,14 +71,14 @@
   </label>
 
   {#if error}<p class="error">{error}</p>{/if}
-  <button class="btn-primary" disabled={!file || busy} onclick={save}>{busy ? 'Adding…' : 'Add song'}</button>
+  <button class="btn-ember" disabled={!file || busy} onclick={save}>{busy ? 'Adding…' : 'Add song'}</button>
 </div>
 
 <style>
   .scrim {
     position: fixed;
     inset: 0;
-    background: rgba(5, 7, 20, 0.6);
+    background: rgba(4, 2, 4, 0.6);
   }
   .sheet {
     position: fixed;
@@ -91,8 +91,9 @@
     display: grid;
     gap: 14px;
     padding: 24px 22px calc(var(--sab) + 20px);
-    border-radius: 28px 28px 0 0;
-    background: var(--midnight-2);
+    border-radius: 30px 30px 0 0;
+    background: rgba(24, 17, 19, 0.97);
+    box-shadow: inset 0 1px 0 rgba(255, 170, 120, 0.2), 0 -20px 60px rgba(0, 0, 0, 0.6);
   }
   .close {
     position: absolute;
@@ -100,8 +101,9 @@
     right: 14px;
   }
   h2 {
-    font-size: 24px;
-    font-weight: 800;
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: 34px;
     padding-right: 56px;
   }
   .lead,
@@ -129,7 +131,7 @@
     inset: 0;
     opacity: 0;
   }
-  .file .btn-quiet {
+  .file .btn-glass {
     display: inline-flex;
     align-items: center;
     flex: none;
@@ -161,7 +163,7 @@
     color: var(--danger);
     font-weight: 650;
   }
-  .btn-primary:disabled {
+  .btn-ember:disabled {
     opacity: 0.5;
   }
 </style>

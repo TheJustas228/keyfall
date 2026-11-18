@@ -41,3 +41,13 @@ export function hitTest(keys: Key[], x: number, y: number, keyH: number): number
   for (const k of keys) if (!k.black && x >= k.x && x < k.x + k.w) return k.midi;
   return null;
 }
+
+/**
+ * Map a touch x (relative to the keyboard's left edge) at vertical fraction `frac`
+ * (0 = top, 1 = bottom) back to flat key-layout coordinates, undoing the perspective.
+ */
+export function unproject(x: number, frac: number, width: number, perspective: number): number {
+  const cx = width / 2;
+  const s = perspective + (1 - perspective) * Math.min(1, Math.max(0, frac));
+  return cx + (x - cx) / s;
+}
