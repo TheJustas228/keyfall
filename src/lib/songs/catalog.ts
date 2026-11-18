@@ -2,8 +2,7 @@ import { midiToSong } from '../music/midi';
 import { parseNotation, type NotationSong } from '../music/notation';
 import { songDuration, type Song, type SongArt } from '../music/types';
 import type { ImportMeta } from '../storage/imports';
-// TEMP until easy.ts lands
-const EASY_SONGS: NotationSong[] = (Object.values(import.meta.glob('./easy.ts', { eager: true }))[0] as { EASY_SONGS?: NotationSong[] } | undefined)?.EASY_SONGS ?? [];
+import { EASY_SONGS } from './easy';
 
 export interface CatalogEntry {
   id: string;
