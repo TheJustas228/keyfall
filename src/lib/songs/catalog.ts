@@ -3,6 +3,7 @@ import { parseNotation, type NotationSong } from '../music/notation';
 import { songDuration, type Song, type SongArt } from '../music/types';
 import type { ImportMeta } from '../storage/imports';
 import { EASY_SONGS } from './easy';
+import { portraitKey } from './portraits';
 
 export interface CatalogEntry {
   id: string;
@@ -18,7 +19,14 @@ export interface CatalogEntry {
   file?: string;
   notation?: NotationSong;
   importId?: string;
+  /** URL of the composer's public-domain portrait, if there is one */
+  portrait?: string;
 }
+
+const portraitUrl = (composer: string) => {
+  const key = portraitKey(composer);
+  return key ? `${import.meta.env.BASE_URL}portraits/${key}.jpg` : undefined;
+};
 
 const MUTOPIA_PD = 'Score from the Mutopia Project, public domain.';
 const mutopiaCC = (v: string) => `Score from the Mutopia Project, licensed CC BY-SA ${v}.`;
@@ -72,7 +80,7 @@ const EASY: CatalogEntry[] = EASY_SONGS.map((s) => ({
 
 // Order: the user's requested songs first, then easy to hard.
 const firstIds = ['fur-elise', 'river-flows', 'fur-elise-easy'];
-export const CATALOG: CatalogEntry[] = [...BUILTIN_MIDI, RIVER, ...EASY].sort((a, b) => {
+export const CATALOG: CatalogEntry[] = [...BUILTIN_MIDI, RIVER, ...EASY].map((e) => ({ ...e, portrait: portraitUrl(e.composer) })).sort((a, b) => {
   const fa = firstIds.indexOf(a.id), fb = firstIds.indexOf(b.id);
   if (fa !== -1 || fb !== -1) return (fa === -1 ? 99 : fa) - (fb === -1 ? 99 : fb);
   return a.difficulty - b.difficulty;

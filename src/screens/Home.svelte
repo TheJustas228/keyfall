@@ -3,7 +3,7 @@
   import { app, go, openSong } from '../lib/ui/store.svelte';
   import { visibleCatalog, type CatalogEntry } from '../lib/songs/catalog';
   import { getHistory, getLastSong, getStreak } from '../lib/storage/prefs';
-  import { queueThumb } from '../lib/ui/planets';
+  import Avatar from '../lib/ui/Avatar.svelte';
 
   let { onimport }: { onimport: (title?: string) => void } = $props();
 
@@ -11,16 +11,12 @@
   const lastId = getLastSong();
   const last = $derived(entries.find((e) => e.id === lastId && e.kind !== 'placeholder'));
   const streak = getStreak();
-  let thumb = $state('');
   let query = $state('');
   let shown = $state(false);
 
   const hour = new Date().getHours();
   const hello = hour < 5 ? 'Still up?' : hour < 12 ? 'Good morning!' : hour < 18 ? 'Hey!' : 'Good evening!';
 
-  $effect(() => {
-    if (last) queueThumb(last.id, last.palette, 96, (u) => (thumb = u));
-  });
 
   function suggest() {
     const played = new Set(getHistory());
@@ -81,7 +77,7 @@
   <section class="actions">
     {#if last}
       <button class="continue glass" onclick={() => openSong(last, 'home')}>
-        <span class="thumb">{#if thumb}<img src={thumb} alt="" />{/if}</span>
+        <Avatar entry={last} size={64} />
         <span class="ct">
           <span class="title">{last.title}</span>
           <span class="sub">Continue learning <b>›</b></span>
@@ -310,20 +306,6 @@
   }
   .continue:active {
     transform: scale(0.97);
-  }
-  .thumb {
-    width: 64px;
-    height: 64px;
-    border-radius: 50%;
-    flex: none;
-    overflow: hidden;
-    background: radial-gradient(circle, #3a1a10, #120807);
-  }
-  .thumb img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    transform: scale(1.25);
   }
   .ct {
     display: grid;

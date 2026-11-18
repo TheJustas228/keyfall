@@ -9,7 +9,8 @@ const MAX_VOICES = 48;
 
 interface Voice {
   midi: number;
-  src: AudioBufferSourceNode;
+  src: AudioScheduledSourceNode;
+  extra?: AudioScheduledSourceNode[];
   gain: GainNode;
   start: number;
   releasedAt: number | null;
@@ -90,6 +91,7 @@ class Piano {
     s.buffer = b;
     s.connect(ctx.destination);
     s.start();
+    console.info(`[Keyfall] audio ${ctx.state}, ${ctx.sampleRate} Hz, samples ${this.buffers.filter(Boolean).length}/${SAMPLE_NAMES.length}`);
   }
 
   load(onProgress?: (fraction: number) => void): Promise<void> {
@@ -103,13 +105,15 @@ class Piano {
           const res = await fetch(base + name + '.mp3');
           const data = await res.arrayBuffer();
           this.buffers[i] = await ctx.decodeAudioData(data);
-        } catch {
+        } catch (e) {
           this.buffers[i] = null;
+          console.warn(`[Keyfall] piano sample ${name} failed: ${e instanceof Error ? e.message : e}`);
         }
         onProgress?.(++done / SAMPLE_NAMES.length);
       }),
     ).then(() => {
       this.loaded = this.buffers.some(Boolean);
+      console.info(`[Keyfall] piano samples decoded ${this.buffers.filter(Boolean).length}/${SAMPLE_NAMES.length}; audio ${ctx.state}`);
     });
     return this.loading;
   }
@@ -160,19 +164,40 @@ class Piano {
     const ctx = this.ctx;
     if (!ctx) return null;
     const pick = this.pickSample(midi);
-    if (!pick) return null;
     this.reap();
     if (this.voices.length >= MAX_VOICES) this.kill(this.voices[0], ctx.currentTime);
-    const src = ctx.createBufferSource();
-    src.buffer = pick.buf;
-    src.playbackRate.value = pick.rate;
     const gain = ctx.createGain();
     const level = 0.12 + 0.88 * Math.pow(Math.min(1, Math.max(0.05, vel)), 1.4);
     const t = Math.max(when, ctx.currentTime);
-    gain.gain.setValueAtTime(level, t);
+    let src: AudioScheduledSourceNode;
+    const extra: AudioScheduledSourceNode[] = [];
+    if (pick) {
+      const b = ctx.createBufferSource();
+      b.buffer = pick.buf;
+      b.playbackRate.value = pick.rate;
+      src = b;
+      gain.gain.setValueAtTime(level, t);
+    } else {
+      // Fallback if the piano samples couldn't load: a soft synthesized piano tone.
+      const f = 440 * 2 ** ((midi - 69) / 12);
+      const o1 = ctx.createOscillator();
+      o1.type = 'triangle';
+      o1.frequency.value = f;
+      const o2 = ctx.createOscillator();
+      o2.frequency.value = f * 2;
+      const g2 = ctx.createGain();
+      g2.gain.value = 0.25;
+      o2.connect(g2).connect(gain);
+      src = o1;
+      extra.push(o2);
+      gain.gain.setValueAtTime(0, t);
+      gain.gain.linearRampToValueAtTime(level * 0.5, t + 0.005);
+      gain.gain.setTargetAtTime(level * 0.12, t + 0.01, 0.6);
+      o2.start(t);
+    }
     src.connect(gain).connect(this.bus);
     src.start(t);
-    const v: Voice = { midi, src, gain, start: t, releasedAt: null, scheduled };
+    const v: Voice = { midi, src, extra, gain, start: t, releasedAt: null, scheduled };
     src.onended = () => {
       const i = this.voices.indexOf(v);
       if (i >= 0) this.voices.splice(i, 1);
@@ -192,6 +217,7 @@ class Piano {
     v.gain.gain.setTargetAtTime(0, t, tau);
     try {
       v.src.stop(t + tau * 8);
+      for (const x of v.extra ?? []) x.stop(t + tau * 8);
     } catch {
       /* already stopped */
     }
@@ -202,6 +228,7 @@ class Piano {
     v.gain.gain.setTargetAtTime(0, now, 0.01);
     try {
       v.src.stop(now + 0.05);
+      for (const x of v.extra ?? []) x.stop(now + 0.05);
     } catch {
       /* already stopped */
     }

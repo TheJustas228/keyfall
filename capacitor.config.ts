@@ -5,6 +5,8 @@ const config: CapacitorConfig = {
   appName: 'Keyfall',
   webDir: 'dist',
   backgroundColor: '#050307',
+  // keep console output in release builds so the CI simulator run can check audio loads
+  loggingBehavior: 'production',
   ios: {
     contentInset: 'never',
     scrollEnabled: false,

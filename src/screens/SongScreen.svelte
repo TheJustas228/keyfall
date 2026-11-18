@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import Planet from '../lib/ui/Planet.svelte';
+  import Avatar from '../lib/ui/Avatar.svelte';
   import HandOrbit from '../lib/ui/HandOrbit.svelte';
   import { app, getSong, startPlaying, showToast, forgetSong, refreshImports } from '../lib/ui/store.svelte';
   import type { CatalogEntry } from '../lib/songs/catalog';
@@ -8,7 +8,6 @@
   import { deleteImport } from '../lib/storage/imports';
   import { piano } from '../lib/audio/piano';
   import { levelsFor } from '../lib/game/levels';
-  import type { Level } from '../lib/game/prepare';
   import type { Song } from '../lib/music/types';
 
   let { entry, onback }: { entry: CatalogEntry; onback: () => void } = $props();
@@ -22,7 +21,13 @@
   // svelte-ignore state_referenced_locally
   const best = getBest(entry.id);
   let shown = $state(false);
-  let compact = $state(false);
+  let H = $state(800);
+  let W = $state(400);
+
+  // size everything from the screen so the page never needs scrolling
+  const land = $derived(W > H);
+  const heroSize = $derived(land ? Math.max(100, Math.min(180, H * 0.36)) : Math.max(110, Math.min(190, H * 0.17)));
+  const orbitSize = $derived(land ? Math.max(64, Math.min(112, H * 0.2)) : Math.max(80, Math.min(132, H * 0.115)));
 
   $effect(() => {
     getSong(entry)
@@ -31,24 +36,11 @@
   });
   onMount(() => {
     requestAnimationFrame(() => (shown = true));
-    const mq = matchMedia('(orientation: landscape) and (max-height: 560px)');
-    const set = () => (compact = mq.matches);
-    set();
-    mq.addEventListener('change', set);
-    return () => mq.removeEventListener('change', set);
   });
 
   const hasL = $derived(!song || song.notes.some((n) => n.hand === 'L'));
   const hasR = $derived(!song || song.notes.some((n) => n.hand === 'R'));
   const duration = $derived(song ? `${Math.floor(song.duration / 60)}:${String(Math.round(song.duration % 60)).padStart(2, '0')}` : '');
-  const playLevels: Level[] = ['off', 'easy', 'full'];
-  const levelName: Record<Level, string> = { off: 'Off', easy: 'Easy', full: 'Hard' };
-  const canPlay = $derived(ui.play.R !== 'off' || ui.play.L !== 'off');
-
-  function cycle(hand: 'R' | 'L') {
-    const i = playLevels.indexOf(ui.play[hand]);
-    ui.play[hand] = playLevels[(i + 1) % 3];
-  }
 
   async function start(mode: 'learn' | 'play' | 'watch') {
     if (!song) return;
@@ -56,15 +48,10 @@
     setLastSong(entry.id);
     pushHistory(entry.id);
     await piano.ensureStarted();
+    const l = levelsFor(ui.hands);
     let config: SongConfig;
-    if (mode === 'learn') {
-      const l = levelsFor(ui.hands, ui.diff);
-      config = { levels: l.levels, speed: l.speed, mode: 'learn', input: ui.input };
-    } else if (mode === 'play') {
-      config = { levels: { ...ui.play }, speed: 1, mode: 'play', input: ui.input };
-    } else {
-      config = { levels: { R: 'full', L: 'full' }, speed: 1, mode: 'watch', input: 'touch' };
-    }
+    if (mode === 'watch') config = { levels: { R: 'full', L: 'full' }, speed: 1, mode: 'watch', input: 'touch' };
+    else config = { levels: l.levels, speed: mode === 'learn' ? l.speed : 1, mode, input: ui.input };
     startPlaying(entry, song, config);
   }
 
@@ -76,31 +63,36 @@
     showToast(`Removed ${entry.title}.`);
     onback();
   }
-
-  const ringPct = best ? Math.round(best.accuracy * 100) : 0;
-  const C = 2 * Math.PI * 92;
 </script>
 
-<div class="song" class:shown>
+<svelte:window bind:innerHeight={H} bind:innerWidth={W} />
+
+<div class="song" class:land class:shown>
   <header>
     <button class="orb-btn" aria-label="Back" onclick={onback}>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7" /></svg>
     </button>
+    {#if entry.kind === 'import'}
+      <button class="remove" onclick={remove}>Remove</button>
+    {/if}
     <button class="orb-btn heart" class:on={fav} aria-label={fav ? 'Remove from favorites' : 'Add to favorites'} onclick={() => (fav = toggleFavorite(entry.id))}>
       <svg viewBox="0 0 24 24"><path d="M12 20.5s-7.5-4.6-7.5-10.6A4.4 4.4 0 0 1 12 7.1a4.4 4.4 0 0 1 7.5 2.8c0 6-7.5 10.6-7.5 10.6z" /></svg>
     </button>
   </header>
 
   <section class="hero">
-    <div class="halo">
+    <div class="halo" style:width="{heroSize * 1.32}px" style:height="{heroSize * 1.32}px">
       <svg class="rings" viewBox="0 0 300 300" aria-hidden="true">
-        <circle cx="150" cy="150" r="140" />
-        <circle cx="150" cy="150" r="128" class="dash" />
+        <circle cx="150" cy="150" r="146" />
+        <circle cx="150" cy="150" r="136" class="dash" />
       </svg>
-      <Planet seed={entry.id} palette={entry.palette} size={176} spin={0.025} />
+      <Avatar {entry} size={heroSize} spin={30} />
     </div>
     <h1 class="serif">{entry.title}</h1>
-    <p class="composer">{entry.composer}{duration ? `  ·  ${duration}` : ''}</p>
+    <p class="composer">
+      {entry.composer}{duration ? `  ·  ${duration}` : ''}
+      {#if best}<span class="best">Best {Math.round(best.accuracy * 100)}%{best.stars ? ` ${'★'.repeat(best.stars)}` : ''}</span>{/if}
+    </p>
   </section>
 
   <section class="controls">
@@ -114,53 +106,9 @@
         Play
       </button>
     </div>
+    <p class="hint">{ui.tab === 'learn' ? 'The notes wait for you. Take your time.' : 'The notes keep moving. Hit them on time to score.'}</p>
 
-    {#key ui.tab}
-      <div class="pane">
-        {#if ui.tab === 'learn'}
-          <HandOrbit {compact} value={ui.hands} onchange={(v) => (ui.hands = v)} disabled={{ L: !hasL, R: !hasR, both: !hasL || !hasR }} />
-          <div class="diff glass" role="radiogroup" aria-label="Difficulty">
-            {#each [['easy', 'Easy'], ['medium', 'Medium'], ['hard', 'Hard']] as [v, l]}
-              <button role="radio" aria-checked={ui.diff === v} class={v} class:on={ui.diff === v} onclick={() => (ui.diff = v as SongUi['diff'])}>{l}</button>
-            {/each}
-          </div>
-          <p class="hint">
-            {ui.diff === 'easy' ? 'Melody notes only, at a gentle pace. The notes wait for you.' : ui.diff === 'medium' ? 'Every note, a little slower than written. The notes wait for you.' : 'Every note at full speed. The notes wait for you.'}
-          </p>
-        {:else}
-          <div class="score">
-            {#if best}
-              <svg viewBox="0 0 200 200" class="ringchart">
-                <circle cx="100" cy="100" r="92" class="track" />
-                <circle cx="100" cy="100" r="92" class="val" style:stroke-dasharray="{(C * ringPct) / 100} {C}" />
-              </svg>
-              <div class="scoretext">
-                <b class="serif">{ringPct}%</b>
-                <span>Best score{best.stars ? `  ${'★'.repeat(best.stars)}` : ''}</span>
-              </div>
-            {:else}
-              <svg viewBox="0 0 200 200" class="ringchart"><circle cx="100" cy="100" r="92" class="dots" /></svg>
-              <div class="scoretext">
-                <b>No sessions yet</b>
-                <span>Play once and your score appears here.</span>
-              </div>
-            {/if}
-          </div>
-          <div class="hands">
-            {#each [['L', 'Left hand'], ['R', 'Right hand']] as [h, label]}
-              {@const lv = ui.play[h as 'R' | 'L']}
-              <button class="handcard" aria-label="{label}: {levelName[lv]}" disabled={h === 'L' ? !hasL : !hasR} onclick={() => cycle(h as 'R' | 'L')}>
-                <span class="lvl {lv}">{levelName[lv]}</span>
-                <span class="card glass">
-                  <svg viewBox="0 0 24 24" class:mirror={h === 'R'}><path d="M8.5 21c-2.2-1.2-4-3.7-4.5-6.8l-.6-3.3c-.2-.9.4-1.6 1.2-1.7.7-.1 1.3.4 1.5 1.1l.8 2.5V5.2c0-.8.6-1.4 1.4-1.4s1.4.6 1.4 1.4V11h.6V3.6c0-.8.6-1.4 1.4-1.4s1.4.6 1.4 1.4V11h.6V4.6c0-.8.6-1.4 1.4-1.4s1.4.6 1.4 1.4V11h.6V6.8c0-.8.6-1.4 1.4-1.4s1.4.6 1.4 1.4v7.4c0 3.6-2 6.8-6.3 6.8z" /></svg>
-                </span>
-              </button>
-            {/each}
-          </div>
-          <p class="hint">Tap a hand to switch between Off, Easy and Hard. The notes keep moving and you score points.</p>
-        {/if}
-      </div>
-    {/key}
+    <HandOrbit size={orbitSize} value={ui.hands} onchange={(v) => (ui.hands = v)} disabled={{ L: !hasL, R: !hasR, both: !hasL || !hasR }} />
 
     <div class="input glass" role="radiogroup" aria-label="Play on">
       <button role="radio" aria-checked={ui.input === 'touch'} class:on={ui.input === 'touch'} onclick={() => (ui.input = 'touch')}>On screen</button>
@@ -171,14 +119,14 @@
     </div>
 
     {#if error}<p class="error">This song couldn’t be opened: {error}</p>{/if}
-    <button class="btn-ember go" disabled={!song || !app.pianoReady || (ui.tab === 'play' && !canPlay)} onclick={() => start(ui.tab)}>
-      {!song ? 'Loading song…' : !app.pianoReady ? `Tuning the piano ${Math.round(app.pianoProgress * 100)}%` : 'Continue'}
-    </button>
-    <div class="links">
-      <button onclick={() => start('watch')} disabled={!song || !app.pianoReady}>Just listen to it</button>
-      {#if entry.kind === 'import'}<button class="danger" onclick={remove}>Remove song</button>{/if}
+    <div class="go">
+      <button class="btn-ember" disabled={!song || !app.pianoReady} onclick={() => start(ui.tab)}>
+        {!song ? 'Loading song…' : !app.pianoReady ? `Tuning the piano ${Math.round(app.pianoProgress * 100)}%` : 'Continue'}
+      </button>
+      <button class="orb-btn listen" aria-label="Just listen to the song" disabled={!song || !app.pianoReady} onclick={() => start('watch')}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14v-2a8 8 0 0 1 16 0v2" /><rect x="3" y="14" width="4" height="6" rx="1.5" /><rect x="17" y="14" width="4" height="6" rx="1.5" /></svg>
+      </button>
     </div>
-    {#if entry.credit}<p class="credit">{entry.credit}</p>{/if}
   </section>
 </div>
 
@@ -186,16 +134,24 @@
   .song {
     position: fixed;
     inset: 0;
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
-    padding: calc(var(--sat) + 12px) calc(var(--sar) + 20px) calc(var(--sab) + 24px) calc(var(--sal) + 20px);
-    background: radial-gradient(90% 50% at 50% 18%, rgba(120, 30, 10, 0.35), transparent 70%);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding: calc(var(--sat) + 8px) calc(var(--sar) + 20px) calc(var(--sab) + 12px) calc(var(--sal) + 20px);
+    background: radial-gradient(90% 45% at 50% 16%, rgba(120, 30, 10, 0.35), transparent 70%);
   }
   header {
     display: flex;
     justify-content: space-between;
+    align-items: center;
     position: relative;
     z-index: 2;
+  }
+  .remove {
+    color: var(--danger);
+    font-size: 15px;
+    min-height: 44px;
+    padding: 0 12px;
   }
   .heart svg {
     width: 26px;
@@ -214,21 +170,22 @@
     display: grid;
     justify-items: center;
     text-align: center;
-    margin-top: -20px;
+    margin-top: -26px;
   }
   .halo {
     position: relative;
-    width: 270px;
-    height: 270px;
     display: grid;
     place-items: center;
     opacity: 0;
-    transform: scale(0.8);
+    transform: scale(0.85);
     transition: opacity 0.7s ease, transform 1s var(--spring);
   }
   .shown .halo {
     opacity: 1;
     transform: none;
+  }
+  .halo :global(.avatar) {
+    box-shadow: 0 0 0 1px rgba(255, 220, 200, 0.25), 0 0 40px rgba(255, 106, 31, 0.35);
   }
   .rings {
     position: absolute;
@@ -247,284 +204,150 @@
     stroke: rgba(255, 170, 120, 0.35);
   }
   @keyframes spin {
-    to { transform: rotate(360deg); }
+    to {
+      transform: rotate(360deg);
+    }
   }
   h1 {
-    margin-top: 4px;
-    font-size: clamp(36px, 10vw, 46px);
+    margin-top: 6px;
+    font-size: clamp(30px, 8.5vw, 42px);
     line-height: 1.05;
   }
   .composer {
-    margin-top: 8px;
+    margin-top: 6px;
     color: var(--muted);
-    font-size: 18px;
-    white-space: pre;
+    font-size: 16px;
+    white-space: pre-wrap;
   }
-  .hero h1,
-  .hero .composer {
-    opacity: 0;
-    transform: translateY(10px);
-    transition: opacity 0.6s ease 0.2s, transform 0.7s var(--ease-out) 0.2s;
-  }
-  .shown .hero h1,
-  .shown .hero .composer {
-    opacity: 1;
-    transform: none;
+  .best {
+    display: inline-block;
+    margin-left: 10px;
+    padding: 2px 10px;
+    border-radius: 999px;
+    color: var(--gold);
+    background: rgba(255, 196, 107, 0.1);
+    box-shadow: inset 0 0 0 1px rgba(255, 196, 107, 0.3);
+    font-size: 14px;
   }
   .controls {
-    display: grid;
-    gap: 16px;
-    margin: 22px auto 0;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-evenly;
+    gap: 6px;
+    margin: 12px auto 0;
+    width: 100%;
     max-width: 520px;
   }
   .tabs {
     display: flex;
-    padding: 5px;
+    padding: 4px;
     border-radius: 999px;
   }
   .tabs button {
     flex: 1;
-    min-height: 50px;
+    min-height: 46px;
     border-radius: 999px;
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 10px;
-    font-size: 18px;
+    font-size: 17px;
     color: var(--muted);
     transition: color 0.2s, background 0.35s var(--ease-out);
   }
   .tabs button svg {
-    width: 22px;
-    height: 22px;
+    width: 21px;
+    height: 21px;
   }
   .tabs button.on {
     color: var(--ivory);
     background: rgba(255, 255, 255, 0.07);
     box-shadow: inset 0 0 0 1px var(--hair-strong);
   }
-  .pane {
-    display: grid;
-    gap: 14px;
-    animation: paneIn 0.45s var(--ease-out);
-  }
-  @keyframes paneIn {
-    from { opacity: 0; transform: translateY(12px); }
-  }
-  .diff {
-    display: flex;
-    padding: 5px;
-    border-radius: 999px;
-  }
-  .diff button {
-    flex: 1;
-    min-height: 50px;
-    border-radius: 999px;
-    font-size: 18px;
-    color: var(--faint);
-    transition: color 0.25s, background 0.35s var(--ease-out), box-shadow 0.35s;
-  }
-  .diff button.on {
-    background: rgba(0, 0, 0, 0.35);
-    box-shadow: inset 0 0 0 1px var(--hair-strong);
-  }
-  .diff .easy.on { color: var(--gold); text-shadow: 0 0 14px rgba(255, 196, 107, 0.6); }
-  .diff .medium.on { color: var(--flame); text-shadow: 0 0 14px rgba(255, 143, 60, 0.6); }
-  .diff .hard.on { color: #ff4d5e; text-shadow: 0 0 14px rgba(255, 77, 94, 0.6); }
   .hint {
     text-align: center;
     color: var(--muted);
-    font-size: 15px;
-    line-height: 1.4;
-  }
-  .score {
-    position: relative;
-    width: 230px;
-    height: 230px;
-    margin: 0 auto;
-    display: grid;
-    place-items: center;
-  }
-  .ringchart {
-    position: absolute;
-    inset: 0;
-    transform: rotate(-90deg);
-  }
-  .ringchart circle {
-    fill: none;
-    stroke-width: 6;
-  }
-  .ringchart .track {
-    stroke: rgba(255, 255, 255, 0.08);
-  }
-  .ringchart .val {
-    stroke: var(--ember);
-    stroke-linecap: round;
-    filter: drop-shadow(0 0 8px rgba(255, 106, 31, 0.7));
-    animation: draw 1.4s var(--ease-out);
-  }
-  @keyframes draw {
-    from { stroke-dasharray: 0 999; }
-  }
-  .ringchart .dots {
-    stroke: rgba(255, 255, 255, 0.28);
-    stroke-width: 2;
-    stroke-dasharray: 1 7;
-    stroke-linecap: round;
-    animation: spin 40s linear infinite;
-    transform-origin: center;
-  }
-  .scoretext {
-    display: grid;
-    gap: 6px;
-    text-align: center;
-    max-width: 170px;
-  }
-  .scoretext b {
-    font-size: 19px;
-    font-weight: 600;
-  }
-  .scoretext b.serif {
-    font-size: 56px;
-    font-weight: 400;
-  }
-  .scoretext span {
-    color: var(--muted);
-    font-size: 15px;
-    line-height: 1.35;
-  }
-  .hands {
-    display: flex;
-    justify-content: center;
-    gap: 12px;
-  }
-  .handcard {
-    display: grid;
-    justify-items: center;
-    gap: 10px;
-  }
-  .lvl {
-    font-size: 17px;
-    padding-bottom: 6px;
-    min-width: 108px;
-    text-align: center;
-    border-bottom: 3px solid currentColor;
-  }
-  .lvl.off { color: var(--faint); }
-  .lvl.easy { color: var(--gold); }
-  .lvl.full { color: #ff4d5e; }
-  .card {
-    width: 116px;
-    height: 116px;
-    border-radius: 22px;
-    display: grid;
-    place-items: center;
-    transition: transform 0.2s var(--spring);
-  }
-  .handcard:active .card {
-    transform: scale(0.94);
-  }
-  .card svg {
-    width: 62px;
-    height: 62px;
-    fill: var(--ivory);
-  }
-  .card svg.mirror {
-    transform: scaleX(-1);
-  }
-  .handcard:disabled {
-    opacity: 0.35;
+    font-size: 14px;
   }
   .input {
     display: flex;
     padding: 4px;
     border-radius: 999px;
-    max-width: 340px;
+    max-width: 320px;
     margin: 0 auto;
     width: 100%;
   }
   .input button {
     flex: 1;
-    min-height: 44px;
+    min-height: 40px;
     border-radius: 999px;
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 6px;
     color: var(--muted);
-    font-size: 16px;
+    font-size: 15px;
   }
   .input button svg {
-    width: 18px;
-    height: 18px;
+    width: 17px;
+    height: 17px;
   }
   .input button.on {
     color: var(--ivory);
     background: rgba(255, 255, 255, 0.07);
   }
   .go {
-    width: 100%;
-  }
-  .links {
     display: flex;
-    justify-content: center;
-    gap: 24px;
+    gap: 12px;
+    align-items: center;
   }
-  .links button {
-    min-height: 44px;
-    color: var(--flame);
-    font-size: 16px;
+  .go .btn-ember {
+    flex: 1;
   }
-  .links .danger {
-    color: var(--danger);
+  .listen {
+    width: 58px;
+    height: 58px;
   }
-  .links button:disabled {
-    opacity: 0.4;
+  .listen:disabled,
+  .btn-ember:disabled {
+    opacity: 0.45;
   }
   .error {
     color: var(--danger);
     text-align: center;
+    font-size: 14px;
   }
-  .credit {
-    text-align: center;
-    color: var(--faint);
-    font-size: 13px;
-    line-height: 1.4;
+
+  /* sideways: picture and title on the left, choices on the right */
+  .song.land {
+    display: grid;
+    grid-template-columns: minmax(240px, 40%) 1fr;
+    grid-template-rows: auto 1fr;
+    column-gap: 24px;
   }
-  @media (orientation: landscape) and (max-height: 560px) {
-    .song {
-      display: grid;
-      grid-template-columns: minmax(260px, 40%) 1fr;
-      grid-template-rows: auto 1fr;
-      column-gap: 20px;
-    }
-    header {
-      grid-column: 1 / -1;
-      position: absolute;
-      left: calc(var(--sal) + 20px);
-      right: calc(var(--sar) + 20px);
-      top: calc(var(--sat) + 12px);
-    }
-    .hero {
-      grid-column: 1;
-      grid-row: 1 / 3;
-      align-self: center;
-      margin: 0;
-      position: sticky;
-      top: 0;
-    }
-    .halo {
-      width: 220px;
-      height: 220px;
-    }
-    h1 {
-      font-size: 38px;
-    }
-    .controls {
-      grid-column: 2;
-      grid-row: 1 / 3;
-      margin-top: 50px;
-      width: 100%;
-    }
+  .land header {
+    grid-column: 1 / -1;
+    position: absolute;
+    left: calc(var(--sal) + 20px);
+    right: calc(var(--sar) + 20px);
+    top: calc(var(--sat) + 8px);
+  }
+  .land .hero {
+    grid-column: 1;
+    grid-row: 1 / 3;
+    align-self: center;
+    margin: 0;
+  }
+  .land h1 {
+    font-size: 34px;
+  }
+  .land .controls {
+    grid-column: 2;
+    grid-row: 1 / 3;
+    margin: 0;
+    padding-top: 48px;
+    justify-content: space-between;
   }
 </style>

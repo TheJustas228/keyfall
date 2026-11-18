@@ -2,7 +2,7 @@
   import { app, go, openSong } from '../lib/ui/store.svelte';
   import { visibleCatalog, type CatalogEntry } from '../lib/songs/catalog';
   import { getFavorites, getHistory, toggleFavorite, getBest } from '../lib/storage/prefs';
-  import { queueThumb } from '../lib/ui/planets';
+  import Avatar from '../lib/ui/Avatar.svelte';
 
   let { onimport }: { onimport: (title?: string) => void } = $props();
 
@@ -17,7 +17,6 @@
   let searching = $state(!!app.libraryQuery);
   let favorites = $state(getFavorites());
   const history = getHistory();
-  const thumbs = $state<Record<string, string>>({});
 
   const entries = $derived(visibleCatalog(app.imports));
   const filtered = $derived(
@@ -44,9 +43,6 @@
     return out;
   });
 
-  $effect(() => {
-    for (const s of sections) for (const e of s.items) if (!thumbs[e.id]) queueThumb(e.id, e.palette, 88, (u) => (thumbs[e.id] = u));
-  });
 
   const diffName = ['Any difficulty', 'Easy', 'Medium', 'Hard'];
   const diffClass = ['', 'easy', 'medium', 'hard'];
@@ -141,7 +137,7 @@
       {#each s.items as e, i (s.title + e.id)}
         {@const best = getBest(e.id)}
         <div class="row" role="button" tabindex="0" style:--i={i} onclick={() => open(e)} onkeydown={(k) => k.key === 'Enter' && open(e)}>
-          <span class="thumb">{#if thumbs[e.id]}<img src={thumbs[e.id]} alt="" />{/if}</span>
+          <Avatar entry={e} size={64} round={false} />
           <span class="text">
             <span class="name">{e.title}</span>
             <span class="by">
@@ -344,25 +340,6 @@
   }
   @keyframes rise {
     from { opacity: 0; transform: translateY(10px); }
-  }
-  .thumb {
-    width: 64px;
-    height: 64px;
-    flex: none;
-    border-radius: 16px;
-    overflow: hidden;
-    background: radial-gradient(circle at 50% 40%, #2a1210, #0d0707);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
-  }
-  .thumb img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    transform: scale(1.12);
-    animation: fadein 0.4s ease;
-  }
-  @keyframes fadein {
-    from { opacity: 0; transform: scale(0.9); }
   }
   .text {
     flex: 1;

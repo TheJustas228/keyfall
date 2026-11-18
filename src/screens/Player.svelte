@@ -12,6 +12,8 @@
   import { startListening, MicError, MIC_LAG, type Listener } from '../lib/audio/listen';
   import { preferFlats } from '../lib/music/spelling';
   import { haptic } from '../lib/ui/haptics';
+  import { fitView, panView, zoomView, viewKeys, whiteIndexOf, WHITE_TOTAL, type View } from '../lib/game/view';
+  import { noteLabel } from '../lib/game/renderer';
   import type { Note, Song } from '../lib/music/types';
   import type { SongConfig } from '../lib/storage/prefs';
   import type { CatalogEntry } from '../lib/songs/catalog';
@@ -52,7 +54,9 @@
   let paused = $state(false);
   let started = $state(false);
   // svelte-ignore state_referenced_locally
-  let needsTapToListen = $state(input === 'listen');
+  // Learn plays its preview first (mic off, full sound); the mic turns on when it's your turn
+  let needsTapToListen = $state(input === 'listen' && mode !== 'learn');
+  let waitingMic = $state(false);
   let progress = $state(0);
   let loopA = $state<number | null>(null);
   let loopB = $state<number | null>(null);
@@ -61,6 +65,17 @@
   let micLevel = $state(0);
   let coach = $state<{ text: string; id: number; sticky: boolean } | null>(null);
   let showMap = $state(true);
+  // which part of the piano is on screen (pan / zoom)
+  // svelte-ignore state_referenced_locally
+  let view: View = fitView(prepared.lo, prepared.hi);
+  let viewUi = $state<View>({ ...view });
+  let heard = $state('');
+  let heardTimer = 0;
+  let offLeft = $state(false);
+  let offRight = $state(false);
+  const stagePointers = new Map<number, { x: number; y: number }>();
+  let lastStageTap = 0;
+  let runTimer = 0;
   let scrubbing = $state(false);
 
   let container: HTMLDivElement;
@@ -115,7 +130,7 @@
     const kbH = portrait ? Math.min(220, Math.max(150, H * 0.21)) : Math.min(190, Math.max(116, H * 0.36));
     kb = { x: sal + 4, y: H - Math.max(sab, 4) - kbH, w: W - sal - sar - 8, h: kbH };
     stageTop = sat + 62;
-    keys = layoutKeys(prepared.lo, prepared.hi, kb.w);
+    keys = viewKeys(view, kb.w);
     renderer.resize(W, H, Math.min(window.devicePixelRatio || 1, 3));
   }
 
@@ -123,7 +138,8 @@
   function scheduleAuto() {
     const s = active();
     const now = piano.now();
-    const volume = input === 'listen' ? 0.55 : 1;
+    // quieter accompaniment only while the mic is listening, so it doesn't drown your piano
+    const volume = listener ? 0.55 : 1;
     for (const n of scheduler.due(s.autoHorizon(0.14), s.clock, s.epoch)) {
       const delay = Math.max(0, (n.start - s.clock) / s.speed);
       piano.schedule(n.midi, (watch || preview ? n.vel : n.vel * 0.8) * volume, now + delay, n.dur / s.speed);
@@ -133,6 +149,68 @@
   function rescheduleNow() {
     piano.cancelScheduled();
     scheduler = new AutoScheduler(preview ? previewPrepared.auto : prepared.auto);
+  }
+
+  // ---------- view: pan & zoom ----------
+  function setView(v: View, flash = true) {
+    view = v;
+    viewUi = { ...v };
+    keys = viewKeys(view, kb.w);
+    if (flash) flashMap(2400);
+  }
+  const zoomBy = (f: number) => setView(zoomView(view, f, 0.5));
+  const panBy = (whites: number) => setView(panView(view, whites));
+  const fitSong = () => setView(fitView(prepared.lo, prepared.hi));
+
+  function stageDown(e: PointerEvent): boolean {
+    const r = canvas.getBoundingClientRect();
+    const y = e.clientY - r.top;
+    if (y < stageTop || y > kb.y) return false;
+    e.preventDefault();
+    canvas.setPointerCapture(e.pointerId);
+    stagePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (stagePointers.size === 1) {
+      const now = performance.now();
+      if (now - lastStageTap < 320) {
+        fitSong(); // double-tap: back to the whole song
+        lastStageTap = 0;
+      } else lastStageTap = now;
+    }
+    return true;
+  }
+  function stageMove(e: PointerEvent): boolean {
+    const p = stagePointers.get(e.pointerId);
+    if (!p) return false;
+    const ww = kb.w / view.count;
+    if (stagePointers.size === 1) {
+      const dx = e.clientX - p.x;
+      if (dx) setView(panView(view, -dx / ww)); // drag the piano with your finger
+      if (Math.abs(dx) > 3) lastStageTap = 0;
+    } else {
+      const other = [...stagePointers.entries()].find(([id]) => id !== e.pointerId)?.[1];
+      if (other) {
+        const before = Math.hypot(p.x - other.x, p.y - other.y);
+        const after = Math.hypot(e.clientX - other.x, e.clientY - other.y);
+        if (before > 12 && after > 12) {
+          const r = canvas.getBoundingClientRect();
+          const anchor = Math.min(1, Math.max(0, ((e.clientX + other.x) / 2 - r.left - kb.x) / kb.w));
+          setView(zoomView(view, after / before, anchor));
+        }
+      }
+      lastStageTap = 0;
+    }
+    stagePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    return true;
+  }
+  const stageUp = (e: PointerEvent) => stagePointers.delete(e.pointerId);
+
+  function mapDrag(e: PointerEvent) {
+    const el = e.currentTarget as HTMLElement;
+    if (e.type === 'pointerdown') el.setPointerCapture(e.pointerId);
+    else if (!el.hasPointerCapture(e.pointerId)) return;
+    const r = el.getBoundingClientRect();
+    const frac = (e.clientX - r.left) / r.width;
+    setView(panView({ first: frac * WHITE_TOTAL - view.count / 2, count: view.count }, 0));
   }
 
   // ---------- input ----------
@@ -205,15 +283,20 @@
   }
   function onDown(e: PointerEvent) {
     const midi = midiAt(e);
-    if (midi === null) return;
+    if (midi === null) {
+      stageDown(e);
+      return;
+    }
     e.preventDefault();
     canvas.setPointerCapture(e.pointerId);
     apply(keyInput.down(e.pointerId, midi));
   }
   function onMove(e: PointerEvent) {
+    if (stageMove(e)) return;
     apply(keyInput.move(e.pointerId, midiAt(e)));
   }
   function onUp(e: PointerEvent) {
+    if (stageUp(e)) return;
     apply(keyInput.up(e.pointerId));
   }
   function releaseAll() {
@@ -231,13 +314,22 @@
     return out;
   }
 
+  function showHeard(midis: number[]) {
+    heard = midis.map((m) => noteLabel(m, 'letters', flats) + (Math.floor(m / 12) - 1)).join('  ');
+    clearTimeout(heardTimer);
+    heardTimer = window.setTimeout(() => (heard = ''), 1400);
+  }
+
   function onMicNotes(midis: number[]) {
-    if (!started || paused || preview) return;
+    if (!started || paused || preview || waitingMic) return;
+    showHeard(midis);
     const now = performance.now();
     const lag = (MIC_LAG + (piano.ctx?.baseLatency ?? 0)) * session.speed;
+    const wanted = upcomingRequired();
     for (const midi of midis) {
       const t = recentAuto.get(midi);
       if (t !== undefined && Math.abs(now - t) < 320) continue; // the app's own accompaniment
+      if (!wanted.has(midi)) continue; // the mic can mishear: only the notes you need ever count
       const j = session.press(midi, session.clock - lag);
       const kind = react(midi, j, false);
       userPressed.set(midi, kind);
@@ -291,6 +383,12 @@
     session.seek(Math.min(0, session.firstStart - 1.6 * speed));
     lastMiss = 0;
     waitingSince = performance.now();
+    if (input === 'listen' && !listener) {
+      // your turn: now switch the microphone on
+      waitingMic = true;
+      needsTapToListen = true;
+      return;
+    }
     say('Off you go, from the top.', 2600);
     flashMap(3000);
     if (prepared.auto.length && prepared.required.length) {
@@ -337,7 +435,14 @@
       input = 'touch';
       say(e instanceof MicError ? e.message + ' Using the screen keys for now.' : 'The microphone couldn’t start. Using the screen keys for now.', 0, true);
     }
-    start();
+    if (!started) start();
+    else {
+      waitingMic = false;
+      lastT = performance.now();
+      waitingSince = performance.now();
+      rescheduleNow();
+      if (!coach?.sticky) say(listener ? 'I’m listening. Play the glowing keys on your piano.' : 'Off you go, from the top.', 3000);
+    }
   }
 
   function start() {
@@ -394,7 +499,7 @@
     raf = requestAnimationFrame(loop);
     const dt = (t - lastT) / 1000;
     lastT = t;
-    if (started && !paused && !done) {
+    if (started && !paused && !done && !waitingMic) {
       if (preview) {
         preview.update(dt);
         scheduleAuto();
@@ -423,6 +528,24 @@
       if (n.start + n.dur > s.clock) pressed.set(n.midi, watch ? n.hand : n.hand === 'R' ? 'autoR' : 'autoL');
     }
     for (const [m, k] of userPressed) pressed.set(m, k);
+    if (!preview && keys.length) {
+      let visLo = 200, visHi = 0;
+      for (const k of keys) {
+        if (k.x >= -1 && k.x + k.w <= kb.w + 1) {
+          visLo = Math.min(visLo, k.midi);
+          visHi = Math.max(visHi, k.midi);
+        }
+      }
+      let l = false, r = false;
+      const req = prepared.required;
+      const ahead = app.settings.fallSeconds * session.speed;
+      for (let i = lowerBound(req, session.clock - 0.2); i < req.length && req[i].start < session.clock + ahead; i++) {
+        if (req[i].midi < visLo) l = true;
+        else if (req[i].midi > visHi) r = true;
+      }
+      if (l !== offLeft) offLeft = l;
+      if (r !== offRight) offRight = r;
+    }
     renderer.draw(frameRef());
     heat = Math.max(0, heat - dt * 1.6);
     if (flare) flare.style.opacity = String(0.15 + heat * 0.85);
@@ -456,7 +579,12 @@
     document.addEventListener('visibilitychange', onVisibility);
     // calls, Siri or alarms stop the audio clock: pause instead of drifting out of sync
     const offRunning = piano.onRunningChange((running) => {
-      if (!running && started) pause();
+      clearTimeout(runTimer);
+      // brief audio hiccups (route changes) are ignored; a real interruption pauses the song
+      if (!running && started)
+        runTimer = window.setTimeout(() => {
+          if (!piano.running) pause();
+        }, 600);
     });
     lockScreen();
     if (!needsTapToListen) start();
@@ -474,6 +602,8 @@
       wakeLock?.release().catch(() => {});
       clearTimeout(coachTimer);
       clearTimeout(mapTimer);
+      clearTimeout(heardTimer);
+      clearTimeout(runTimer);
     };
   });
 
@@ -528,7 +658,16 @@
       {/if}
       <div class="thumb" style:left="calc({progress * 100}% - {progress * 34}px)"></div>
     </div>
+    <div class="zoom">
+      <button class="orb small" aria-label="Show more keys" onclick={() => zoomBy(1 / 1.3)}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 12h12" /></svg>
+      </button>
+      <button class="orb small" aria-label="Show bigger keys" onclick={() => zoomBy(1.3)}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 12h12M12 6v12" /></svg>
+      </button>
+    </div>
     {#if input === 'listen'}
+      {#if heard}<span class="heard" title="What the microphone hears">{heard}</span>{/if}
       <div class="mic" title="Microphone level" style:--lvl={micLevel}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></svg>
       </div>
@@ -553,18 +692,41 @@
     {/key}
   {/if}
 
+  {#if started && !preview}
+    <button class="side left" class:hot={offLeft} aria-label="Move the keyboard left" onclick={() => panBy(-7)}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7" /></svg>
+    </button>
+    <button class="side right" class:hot={offRight} aria-label="Move the keyboard right" onclick={() => panBy(7)}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7" /></svg>
+    </button>
+  {/if}
+
   {#if showMap && started}
-    <div class="map" transition:fade={{ duration: 300 }} aria-hidden="true">
+    <div
+      class="map"
+      transition:fade={{ duration: 300 }}
+      role="slider"
+      tabindex="-1"
+      aria-label="Which part of the piano is on screen"
+      aria-valuemin={0}
+      aria-valuemax={WHITE_TOTAL}
+      aria-valuenow={Math.round(viewUi.first)}
+      onpointerdown={(e) => {
+        flashMap(4000);
+        mapDrag(e);
+      }}
+      onpointermove={mapDrag}
+    >
       <svg viewBox="0 0 {MAP_WHITES.length * 10} 60">
         {#each MAP_WHITES as m, i}
-          <rect x={i * 10 + 0.5} y="0" width="9" height="60" rx="1.5" class="w" class:in={m >= prepared.lo && m <= prepared.hi} />
+          <rect x={i * 10 + 0.5} y="0" width="9" height="60" rx="1.5" class="w" class:in={i >= viewUi.first - 0.5 && i < viewUi.first + viewUi.count} class:song={m >= prepared.lo && m <= prepared.hi} />
         {/each}
         {#each MAP_WHITES as m, i}
           {#if [0, 2, 5, 7, 9].includes(m % 12) && m + 1 <= 108}
-            <rect x={i * 10 + 6.5} y="0" width="6" height="36" rx="1" class="b" class:in={m + 1 >= prepared.lo && m + 1 <= prepared.hi} />
+            <rect x={i * 10 + 6.5} y="0" width="6" height="36" rx="1" class="b" />
           {/if}
         {/each}
-        <rect class="frame" x={whiteIndex(prepared.lo) * 10} y="0.75" width={(whiteIndex(prepared.hi) - whiteIndex(prepared.lo) + 1) * 10} height="58.5" rx="3" />
+        <rect class="frame" x={viewUi.first * 10} y="0.75" width={viewUi.count * 10} height="58.5" rx="3" />
         {#each MAP_WHITES as m, i}
           {#if m % 12 === 0}<text x={i * 10 + 5} y="54">C{Math.floor(m / 12) - 1}</text>{/if}
         {/each}
@@ -579,15 +741,21 @@
   {#if needsTapToListen}
     <div class="overlay" transition:fade>
       <div class="card glass">
-        <h2 class="serif">Listen to your piano</h2>
-        <p>Stand your phone on the music rest, then tap Start. Keyfall will ask to use the microphone.</p>
+        <h2 class="serif">{waitingMic ? 'Your turn' : 'Listen to your piano'}</h2>
+        <p>Stand your phone on the music rest, then tap Start listening. Keyfall uses the microphone to hear which keys you play.</p>
         <button class="btn-ember" onclick={beginListening}>Start listening</button>
         <button
           class="btn-glass"
           onclick={() => {
             needsTapToListen = false;
             input = 'touch';
-            start();
+            if (!started) start();
+            else {
+              waitingMic = false;
+              lastT = performance.now();
+              rescheduleNow();
+              say('Off you go, from the top.', 2600);
+            }
           }}>Use the screen keys instead</button
         >
       </div>
@@ -737,6 +905,63 @@
     background: rgba(110, 168, 255, 0.28);
     box-shadow: inset 0 0 0 1px rgba(110, 168, 255, 0.8);
   }
+  .zoom {
+    display: flex;
+    gap: 6px;
+  }
+  .orb.small {
+    width: 40px;
+    height: 40px;
+  }
+  .orb.small svg {
+    width: 20px;
+    height: 20px;
+  }
+  .heard {
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: rgba(255, 122, 47, 0.18);
+    box-shadow: inset 0 0 0 1px rgba(255, 140, 70, 0.5);
+    color: #ffd2b0;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .side {
+    position: absolute;
+    top: 52%;
+    width: 44px;
+    height: 64px;
+    margin-top: -32px;
+    display: grid;
+    place-items: center;
+    border-radius: 22px;
+    background: rgba(18, 14, 16, 0.55);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+    color: rgba(246, 239, 233, 0.75);
+    transition: background 0.3s, color 0.3s, box-shadow 0.3s;
+  }
+  .side svg {
+    width: 24px;
+    height: 24px;
+  }
+  .side.left {
+    left: calc(var(--sal) + 10px);
+  }
+  .side.right {
+    right: calc(var(--sar) + 10px);
+  }
+  .side.hot {
+    color: #fff;
+    background: rgba(255, 106, 31, 0.55);
+    box-shadow: inset 0 0 0 1.5px #ff9a52, 0 0 22px rgba(255, 106, 31, 0.7);
+    animation: nudge 1s ease-in-out infinite;
+  }
+  @keyframes nudge {
+    50% {
+      transform: scale(1.08);
+    }
+  }
   .mic {
     width: 44px;
     height: 44px;
@@ -788,7 +1013,8 @@
     border-radius: 12px;
     background: rgba(40, 38, 44, 0.92);
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-    pointer-events: none;
+    touch-action: none;
+    cursor: grab;
   }
   .map svg {
     display: block;
@@ -800,11 +1026,11 @@
   .map .w.in {
     fill: #fbf8fc;
   }
-  .map .b {
-    fill: #2a282d;
+  .map .w.song:not(.in) {
+    fill: #a39fa8;
   }
-  .map .b.in {
-    fill: #111;
+  .map .b {
+    fill: #1d1b20;
   }
   .map .frame {
     fill: none;

@@ -13,6 +13,15 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         try? AVAudioSession.sharedInstance().setActive(true)
         // Keep the screen awake while practising with the phone on the music stand.
         application.isIdleTimerDisabled = true
+        // When the microphone is on ("My piano"), iOS can move the sound to the quiet
+        // earpiece. Whenever that happens, send it back to the loudspeaker.
+        NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { _ in
+            let session = AVAudioSession.sharedInstance()
+            if session.category == .playAndRecord,
+               session.currentRoute.outputs.contains(where: { $0.portType == .builtInReceiver }) {
+                try? session.overrideOutputAudioPort(.speaker)
+            }
+        }
         return true
     }
 

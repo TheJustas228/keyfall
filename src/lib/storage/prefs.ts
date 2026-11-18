@@ -131,16 +131,19 @@ export function pushHistory(id: string): void {
 export interface SongUi {
   tab: 'learn' | 'play';
   hands: 'R' | 'L' | 'both';
-  diff: 'easy' | 'medium' | 'hard';
-  play: { R: Level; L: Level };
   input: 'touch' | 'listen';
 }
-const DEFAULT_UI: SongUi = { tab: 'learn', hands: 'R', diff: 'easy', play: { R: 'full', L: 'off' }, input: 'touch' };
+const DEFAULT_UI: SongUi = { tab: 'learn', hands: 'R', input: 'touch' };
 export function getSongUi(id: string): SongUi {
   const u = read<Partial<SongUi>>('ui.' + id);
   const last = read<Partial<SongUi>>('ui.last');
-  const base = { ...DEFAULT_UI, ...(last && typeof last === 'object' ? { input: last.input ?? 'touch' } : {}) };
-  return u && typeof u === 'object' ? { ...base, ...u, play: { ...DEFAULT_UI.play, ...(u.play ?? {}) } } : structuredClone(base);
+  const base: SongUi = { ...DEFAULT_UI, input: last?.input === 'listen' ? 'listen' : 'touch' };
+  if (!u || typeof u !== 'object') return base;
+  return {
+    tab: u.tab === 'play' ? 'play' : 'learn',
+    hands: u.hands === 'L' || u.hands === 'both' ? u.hands : 'R',
+    input: u.input === 'listen' ? 'listen' : u.input === 'touch' ? 'touch' : base.input,
+  };
 }
 export function saveSongUi(id: string, ui: SongUi): void {
   write('ui.' + id, ui);
