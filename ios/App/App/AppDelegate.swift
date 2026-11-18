@@ -52,9 +52,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
 /// Keyfall's main screen: a full-screen web view tuned for playing piano.
 class MainViewController: CAPBridgeViewController {
-    // Hide the home bar while playing, and make the bottom edge need a second swipe,
-    // so pressing low keys never sends the app to the background.
-    override var prefersHomeIndicatorAutoHidden: Bool { true }
+    // The home bar is hidden by Capacitor's SystemBars plugin (capacitor.config.ts).
+    // Make the bottom edge need a second swipe, so pressing low keys never sends the app away.
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { [.bottom] }
 
     override func capacitorDidLoad() {

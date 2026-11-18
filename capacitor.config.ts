@@ -12,6 +12,10 @@ const config: CapacitorConfig = {
     preferredContentMode: 'mobile',
     allowsLinkPreview: false,
   },
+  plugins: {
+    // full screen: no status bar, no home indicator
+    SystemBars: { hidden: true },
+  },
 };
 
 export default config;
